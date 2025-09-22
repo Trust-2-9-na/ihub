@@ -50,8 +50,8 @@ The above config shows that the web service will run on `http;//localhost:9000`
     │   │   └── models.go
     │   └── routes.go
     ├── router.go
-    └── server.go
-```
+    └──
+``` server.go
 
 ## Executable Binary
 

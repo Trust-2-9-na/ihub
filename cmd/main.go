@@ -3,69 +3,71 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
+
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/joho/godotenv"
 
 	"web/libs/database/migrations"
 	"web/services"
 )
 
-func gracefulShutdown(webServer *http.Server, done chan bool) {
-	// Create context that listens for the interrupt signal from the OS.
+// Load environment variables from .env file
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+}
+
+// handleGracefulShutdown listens for OS signals and gracefully shuts down the server.
+func handleGracefulShutdown(server *http.Server, shutdownComplete chan bool) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Listen for the interrupt signal.
 	<-ctx.Done()
+	log.Println("Shutdown signal received. Attempting graceful shutdown...")
 
-	log.Println("shutting down gracefully, press Ctrl+C again to force")
-
-	// The context is used to inform the server it has 5 seconds to finish
-	// the request it is currently handling
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := webServer.Shutdown(ctx); err != nil {
-		log.Printf("Server forced to shutdown with error: %v", err)
+
+	if err := server.Shutdown(timeoutCtx); err != nil {
+		log.Printf("Forced shutdown due to error: %v", err)
+	} else {
+		log.Println("Server shutdown completed gracefully.")
 	}
 
-	log.Println("Server exiting")
-
-	// Notify the main goroutine that the shutdown is complete
-	done <- true
+	shutdownComplete <- true
 }
 
 func main() {
-	migrate := flag.Bool("migrate", false, "run database migrations")
+	runMigrations := flag.Bool("migrate", false, "Run database migrations")
 	flag.Parse()
 
-	if *migrate {
+	if *runMigrations {
 		if err := migrations.Migrate(); err != nil {
-			log.Fatalf("failed to migrate database: %v", err)
+			log.Fatalf("Migration failed: %v", err)
 		}
+		log.Println("Migration completed successfully.")
 		return
 	}
 
 	server := services.NewServer()
+	shutdownComplete := make(chan bool, 1)
 
-	// Create a done channel to signal when the shutdown is complete
-	done := make(chan bool, 1)
-
-	// Run graceful shutdown in a separate goroutine
-	go gracefulShutdown(server, done)
+	go handleGracefulShutdown(server, shutdownComplete)
 
 	slog.Info("Server is running", "port", server.Addr)
 
-	err := server.ListenAndServe()
-	if err != nil && err != http.ErrServerClosed {
-		panic(fmt.Sprintf("http server error: %s", err))
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server error: %v", err)
 	}
 
-	// Wait for the graceful shutdown to complete
-	<-done
-	log.Println("Graceful shutdown complete.")
+	<-shutdownComplete
+	log.Println("Application terminated.")
 }

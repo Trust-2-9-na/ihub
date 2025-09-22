@@ -39,14 +39,21 @@ func New() Service {
 	if dbInstance != nil {
 		return dbInstance
 	}
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", config.Username, config.Password, config.Host, config.Port, config.Database, config.Schema)
+	connStr := fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		config.Username,
+		config.Password,
+		config.Host,
+		config.Port,
+		config.Database,
+	)
 	db, err := gorm.Open(postgres.Open(connStr), &gorm.Config{})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to connect to database: %v", err)
 	}
-	return &service{
-		db: db,
-	}
+	dbInstance = &service{db: db}
+	return dbInstance
+
 }
 
 // NewDB creates a new database service instance with the provided gorm.DB.
