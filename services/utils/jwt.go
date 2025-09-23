@@ -7,22 +7,23 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var JwtKey = []byte("INfr!78InnOHUBkEY@2502") // Ideally move this to an env variable
+// JwtKey ideally comes from env variable
+var JwtKey = []byte("INfr!78InnOHUBkEY@2502")
 
 // Claims struct used in JWT
 type Claims struct {
-	UserID uint64 `json:"user_id"`
-	Role   string `json:"role"` // Admin, Student, Mentor, Supervisor
+	UserUUID string `json:"user_id"` // changed from uint64
+	Role     string `json:"role"`    // Admin, Student, Mentor, Supervisor
 	jwt.RegisteredClaims
 }
 
 // GenerateJWT generates a JWT token for a user
-func GenerateJWT(userID uint64, role string) (string, error) {
-	expirationTime := time.Now().Add(1 * time.Hour) // Token valid for 1 hour
+func GenerateJWT(userUUID string, role string) (string, error) {
+	expirationTime := time.Now().Add(1 * time.Hour)
 
 	claims := &Claims{
-		UserID: userID,
-		Role:   role,
+		UserUUID: userUUID,
+		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

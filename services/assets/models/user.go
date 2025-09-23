@@ -4,7 +4,7 @@ package models
 import "time"
 
 type Role struct {
-	RoleID      uint   `json:"roleid" gorm:"primaryKey;autoIncrement"`
+	RoleID      uint   `json:"role_id" gorm:"primaryKey;autoIncrement"`
 	Name        string `json:"name" gorm:"size:50;unique;not null"`
 	Description string `json:"description" gorm:"type:text"`
 	// do NOT define Users slice here for migration
@@ -12,18 +12,22 @@ type Role struct {
 
 type User struct {
 	UserID       uint64  `json:"user_id" gorm:"primaryKey;autoIncrement"`
+	UserUUID     string  `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
 	Username     string  `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
 	Email        string  `json:"email" gorm:"size:150;unique;not null"`
 	PasswordHash string  `json:"-" gorm:"column:password_hash;size:255;not null"`
 	RoleID       uint    `json:"role_id"`
 	CohortID     *uint64 `json:"cohort_id"`
-	Organization *string `json:"organization"`
 	IsActive     bool    `json:"is_active" gorm:"default:true"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
-	Profile      UserProfile `gorm:"foreignKey:UserID"` // one-to-one link
-	Role         Role        `gorm:"foreignKey:RoleID"` // belongs to Role
-	Proposals    []Proposal  `gorm:"foreignKey:SubmittedBy"`
+	Profile      UserProfile `gorm:"foreignKey:UserID"`                   // one-to-one link
+	Role         Role        `gorm:"foreignKey:RoleID;references:RoleID"` // links User.RoleID -> Role.RoleID
+	// belongs to Role
+	Proposals         []Proposal         `gorm:"foreignKey:SubmittedBy"`
+	StudentProfile    *StudentProfile    `gorm:"foreignKey:UserID"`
+	MentorProfile     *MentorProfile     `gorm:"foreignKey:UserID"`
+	SupervisorProfile *SupervisorProfile `gorm:"foreignKey:UserID"`
 }
 
 // user profile model
@@ -45,4 +49,32 @@ type UserProfileResponse struct {
 		Username string `json:"username"`
 		Email    string `json:"email"`
 	} `json:"user"`
+}
+
+// role specific student attributes
+type StudentProfile struct {
+	StudentProfileID uint64 `gorm:"primaryKey;autoIncrement"`
+	UserID           uint64 `gorm:"uniqueIndex;not null"`
+	School           string `json:"school"`
+	Program          string `json:"program"`
+	YearOfStudy      int    `json:"year_of_study"`
+}
+
+type MentorProfile struct {
+	MentorProfileID uint64  `gorm:"primaryKey;autoIncrement"`
+	UserID          uint64  `gorm:"uniqueIndex;not null"`
+	Department      *string `json:"department"`
+	Organization    string  `json:"organization"`
+	Expertise       string  `json:"expertise"`
+	YearsExp        int     `json:"years_exp"`
+}
+
+// supervisor-specific
+type SupervisorProfile struct {
+	SupervisorID uint64  `gorm:"primaryKey;autoIncrement"`
+	UserID       uint64  `gorm:"uniqueIndex;not null"`
+	Department   *string `json:"department"`
+	Expertise    string  `json:"expertise"`
+	YearsExp     int     `json:"years_exp"`
+	Organization string  `json:"organization"`
 }

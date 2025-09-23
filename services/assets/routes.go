@@ -8,60 +8,55 @@ import (
 	"gorm.io/gorm"
 )
 
-// NewRouter sets up all routes for the application.
 func NewRouter(r *mux.Router, DB *gorm.DB) {
-	c := &controllers.Construct{
-		DB: DB,
-	}
-
-	// Base /assets route
-	r.PathPrefix("/assets").HandlerFunc(c.Index).Methods("GET")
-
-	// Base /api
-	apiRoute := r.PathPrefix("/api").Subrouter()
-
-	// -----------------------------
-	// ADMIN ROUTES
-	// -----------------------------
-	adminRoutes := apiRoute.PathPrefix("").Subrouter()
-	adminRoutes.Use(middlewares.RoleAuthorization("Admin")) // match exact role string
-	adminRoutes.HandleFunc("/users", c.GetUsers).Methods("GET")
-	adminRoutes.HandleFunc("/users/{id}", c.UpdateUser).Methods("PUT")
-	adminRoutes.HandleFunc("/users/{id}", c.DeleteUser).Methods("DELETE")
-	adminRoutes.HandleFunc("/roles", c.CreateRole).Methods("POST")
-	adminRoutes.HandleFunc("/roles", c.GetRoles).Methods("GET")
-	adminRoutes.HandleFunc("/roles/{id}", c.UpdateRole).Methods("PUT")
-	adminRoutes.HandleFunc("/roles/{id}", c.DeleteRole).Methods("DELETE")
-	adminRoutes.HandleFunc("/profile", c.DeleteProfile).Methods("DELETE")
-
-	// -----------------------------
-	// SUPERVISOR ROUTES
-	// -----------------------------
-	supervisorRoutes := apiRoute.PathPrefix("").Subrouter()
-	supervisorRoutes.Use(middlewares.RoleAuthorization("Supervisor"))
-	supervisorRoutes.HandleFunc("/users", c.GetUsers).Methods("GET")
-	supervisorRoutes.HandleFunc("/profile/{id}", c.GetProfile).Methods("GET")
-
-	// -----------------------------
-	// MENTOR ROUTES
-	// -----------------------------
-	mentorRoutes := apiRoute.PathPrefix("").Subrouter()
-	mentorRoutes.Use(middlewares.RoleAuthorization("Mentor"))
-	mentorRoutes.HandleFunc("/users", c.GetUsers).Methods("GET")
-	mentorRoutes.HandleFunc("/profile/{id}", c.GetProfile).Methods("GET")
-
-	// -----------------------------
-	// STUDENT ROUTES
-	// -----------------------------
-	studentRoutes := apiRoute.PathPrefix("").Subrouter()
-	studentRoutes.Use(middlewares.RoleAuthorization("Student"))
-	studentRoutes.HandleFunc("/profile/{id}", c.GetProfile).Methods("GET")
-	studentRoutes.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
-	studentRoutes.HandleFunc("/profile/avatar", c.UpdateAvatar).Methods("PATCH")
+	c := &controllers.Construct{DB: DB}
 
 	// -----------------------------
 	// PUBLIC ROUTES
 	// -----------------------------
-	apiRoute.HandleFunc("/signup", c.Signup).Methods("POST")
-	apiRoute.HandleFunc("/login", c.Login).Methods("POST")
+	r.HandleFunc("/assets", c.Index).Methods("GET")
+	api := r.PathPrefix("/api").Subrouter()
+
+	api.HandleFunc("/login", c.Login).Methods("POST")
+	api.HandleFunc("/signup/student", c.SignupStudent).Methods("POST")
+	api.HandleFunc("/signup/mentor", c.SignupMentor).Methods("POST")
+	api.HandleFunc("/signup/supervisor", c.SignupSupervisor).Methods("POST")
+
+	// -----------------------------
+	// ADMIN ROUTES
+	// -----------------------------
+	admin := api.PathPrefix("/admin").Subrouter()
+	admin.Use(middlewares.RoleAuthorization("admin"))
+	admin.HandleFunc("/users", c.GetUsers).Methods("GET")
+	admin.HandleFunc("/users/{uuid}", c.DeleteUser).Methods("DELETE")
+	admin.HandleFunc("/roles", c.CreateRole).Methods("POST")
+	admin.HandleFunc("/roles", c.GetRoles).Methods("GET")
+	admin.HandleFunc("/roles/{id}", c.UpdateRole).Methods("PUT")
+	admin.HandleFunc("/roles/{id}", c.DeleteRole).Methods("DELETE")
+	admin.HandleFunc("/profile", c.DeleteProfile).Methods("DELETE")
+
+	// -----------------------------
+	// SUPERVISOR ROUTES
+	// -----------------------------
+	supervisor := api.PathPrefix("/supervisor").Subrouter()
+	supervisor.Use(middlewares.RoleAuthorization("supervisor"))
+	supervisor.HandleFunc("/users", c.GetUsers).Methods("GET")
+	supervisor.HandleFunc("/profile/{uuid}", c.GetProfile).Methods("GET")
+
+	// -----------------------------
+	// MENTOR ROUTES
+	// -----------------------------
+	mentor := api.PathPrefix("/mentor").Subrouter()
+	mentor.Use(middlewares.RoleAuthorization("mentor"))
+	mentor.HandleFunc("/users", c.GetUsers).Methods("GET")
+	mentor.HandleFunc("/profile/{uuid}", c.GetProfile).Methods("GET")
+
+	// -----------------------------
+	// STUDENT ROUTES
+	// -----------------------------
+	student := api.PathPrefix("/student").Subrouter()
+	student.Use(middlewares.RoleAuthorization("student"))
+	student.HandleFunc("/profile/{uuid}", c.GetProfile).Methods("GET")
+	student.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
+	student.HandleFunc("/profile/avatar", c.UpdateAvatar).Methods("PATCH")
 }
