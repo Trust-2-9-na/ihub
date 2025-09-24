@@ -13,11 +13,23 @@ import (
 )
 
 // -------------------- GET USERS --------------------
+type AdminUserResponse struct {
+	UserID   uint64 `json:"user_id"`
+	UserUUID string `json:"user_uuid"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Role     string `json:"role"` // only the role name
+	IsActive bool   `json:"is_active"`
+	Profile  struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	} `json:"profile"`
+	RoleInfo interface{} `json:"role_info,omitempty"` // Student/Mentor/Supervisor summary
+}
 
 func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 	var users []models.User
 
-	// Preload profiles and roles
 	if err := c.DB.Preload("Profile").
 		Preload("Role").
 		Preload("StudentProfile").
@@ -28,9 +40,181 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Map users to simplified response
+	var response []AdminUserResponse
+	for _, u := range users {
+		item := AdminUserResponse{
+			UserID:   u.UserID,
+			UserUUID: u.UserUUID,
+			Username: u.Username,
+			Email:    u.Email,
+			Role:     u.Role.Name,
+			IsActive: u.IsActive,
+			Profile: struct {
+				FirstName string `json:"first_name"`
+				LastName  string `json:"last_name"`
+			}{
+				FirstName: u.Profile.FirstName,
+				LastName:  u.Profile.LastName,
+			},
+		}
+
+		switch u.RoleID {
+		case 7:
+			if u.StudentProfile != nil {
+				item.RoleInfo = map[string]interface{}{
+					"school":        u.StudentProfile.School,
+					"program":       u.StudentProfile.Program,
+					"year_of_study": u.StudentProfile.YearOfStudy,
+				}
+			}
+		case 8:
+			if u.MentorProfile != nil {
+				item.RoleInfo = map[string]interface{}{
+					"department":   u.MentorProfile.Department,
+					"organization": u.MentorProfile.Organization,
+					"expertise":    u.MentorProfile.Expertise,
+					"years_exp":    u.MentorProfile.YearsExp,
+				}
+			}
+		case 9:
+			if u.SupervisorProfile != nil {
+				item.RoleInfo = map[string]interface{}{
+					"department":   u.SupervisorProfile.Department,
+					"organization": u.SupervisorProfile.Organization,
+					"expertise":    u.SupervisorProfile.Expertise,
+					"years_exp":    u.SupervisorProfile.YearsExp,
+				}
+			}
+		}
+
+		response = append(response, item)
+	}
+
 	c.Json(w, http.StatusOK, "Users retrieved successfully", map[string]interface{}{
-		"users": users,
+		"users": response,
 	})
+}
+
+// get students only
+type StudentResponse struct {
+	UserID         uint64                `json:"user_id"`
+	UserUUID       string                `json:"user_uuid"`
+	Username       string                `json:"username"`
+	Email          string                `json:"email"`
+	IsActive       bool                  `json:"is_active"`
+	Profile        models.UserProfile    `json:"profile"`
+	StudentProfile models.StudentProfile `json:"student_profile"`
+}
+
+func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
+	var users []models.User
+
+	if err := c.DB.Preload("Profile").
+		Preload("StudentProfile").
+		Where("role_id = ?", 7). // 7 = Student
+		Find(&users).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Map to response struct
+	var response []StudentResponse
+	for _, u := range users {
+		response = append(response, StudentResponse{
+			UserID:         u.UserID,
+			UserUUID:       u.UserUUID,
+			Username:       u.Username,
+			Email:          u.Email,
+			IsActive:       u.IsActive,
+			Profile:        u.Profile,
+			StudentProfile: *u.StudentProfile,
+		})
+	}
+
+	c.Json(w, http.StatusOK, "Students retrieved successfully", map[string]interface{}{"students": response})
+}
+
+type MentorResponse struct {
+	UserID        uint64               `json:"user_id"`
+	UserUUID      string               `json:"user_uuid"`
+	Username      string               `json:"username"`
+	Email         string               `json:"email"`
+	IsActive      bool                 `json:"is_active"`
+	Profile       models.UserProfile   `json:"profile"`
+	MentorProfile models.MentorProfile `json:"mentor_profile"`
+}
+
+type SupervisorResponse struct {
+	UserID            uint64                   `json:"user_id"`
+	UserUUID          string                   `json:"user_uuid"`
+	Username          string                   `json:"username"`
+	Email             string                   `json:"email"`
+	IsActive          bool                     `json:"is_active"`
+	Profile           models.UserProfile       `json:"profile"`
+	SupervisorProfile models.SupervisorProfile `json:"supervisor_profile"`
+}
+
+// get mentors only
+func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
+	var users []models.User
+
+	if err := c.DB.Preload("Profile").
+		Preload("MentorProfile").
+		Where("role_id = ?", 8). // 8 = Mentor
+		Find(&users).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch mentors", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	var response []MentorResponse
+	for _, u := range users {
+		if u.MentorProfile == nil {
+			continue // skip users without mentor profile
+		}
+		response = append(response, MentorResponse{
+			UserID:        u.UserID,
+			UserUUID:      u.UserUUID,
+			Username:      u.Username,
+			Email:         u.Email,
+			IsActive:      u.IsActive,
+			Profile:       u.Profile,
+			MentorProfile: *u.MentorProfile,
+		})
+	}
+
+	c.Json(w, http.StatusOK, "Mentors retrieved successfully", map[string]interface{}{"mentors": response})
+}
+
+// get supervisors only
+func (c *Construct) GetSupervisors(w http.ResponseWriter, r *http.Request) {
+	var users []models.User
+
+	if err := c.DB.Preload("Profile").
+		Preload("SupervisorProfile").
+		Where("role_id = ?", 9). // 9 = Supervisor
+		Find(&users).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch supervisors", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	var response []SupervisorResponse
+	for _, u := range users {
+		if u.SupervisorProfile == nil {
+			continue // skip users without supervisor profile
+		}
+		response = append(response, SupervisorResponse{
+			UserID:            u.UserID,
+			UserUUID:          u.UserUUID,
+			Username:          u.Username,
+			Email:             u.Email,
+			IsActive:          u.IsActive,
+			Profile:           u.Profile,
+			SupervisorProfile: *u.SupervisorProfile,
+		})
+	}
+
+	c.Json(w, http.StatusOK, "Supervisors retrieved successfully", map[string]interface{}{"supervisors": response})
 }
 
 // -------------------- LOGIN --------------------

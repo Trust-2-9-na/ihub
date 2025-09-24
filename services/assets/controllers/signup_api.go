@@ -17,7 +17,7 @@ type StudentSignupInput struct {
 	Password    string  `json:"password"`
 	School      string  `json:"school"`
 	Program     string  `json:"program"`
-	YearOfStudy int     `json:"year_of_study"`
+	YearOfStudy string  `json:"year_of_study"`
 	Department  *string `json:"department,omitempty"`
 }
 

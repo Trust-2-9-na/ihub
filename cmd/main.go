@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-
 	"os/signal"
 	"syscall"
 	"time"
@@ -57,6 +56,7 @@ func main() {
 		return
 	}
 
+	// Create server with CORS-enabled router
 	server := services.NewServer()
 	shutdownComplete := make(chan bool, 1)
 

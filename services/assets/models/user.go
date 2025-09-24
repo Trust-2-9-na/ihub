@@ -57,7 +57,7 @@ type StudentProfile struct {
 	UserID           uint64 `gorm:"uniqueIndex;not null"`
 	School           string `json:"school"`
 	Program          string `json:"program"`
-	YearOfStudy      int    `json:"year_of_study"`
+	YearOfStudy      string `json:"year_of_study"`
 }
 
 type MentorProfile struct {
