@@ -45,16 +45,33 @@ func Migrate() error {
 		log.Printf("Migration failed for role-specific profiles: %v", err)
 		return err
 	}
+	// 6. migrate audity logs
+	if err := db.AutoMigrate(&models.AuditLog{}); err != nil {
+		log.Printf("Migration failed for Audity Logs: %v", err)
+		return err
+	}
 
-	// 6. Migrate Proposals
+	// 7. migrate jobs logs
+	if err := db.AutoMigrate(&models.JobLog{}); err != nil {
+		log.Printf("Migration failed for Jobs Logs: %v", err)
+		return err
+	}
+
+	// 8. Migrate Proposals
 	if err := db.AutoMigrate(&models.Proposal{}); err != nil {
 		log.Printf("Migration failed for Proposals: %v", err)
 		return err
 	}
 
+	// 9. migrate notifications
+	if err := db.AutoMigrate(&models.Notification{}); err != nil {
+		log.Printf("Migration failed for notifications: %v", err)
+		return err
+	}
+
 	log.Println("All migrations ran successfully!")
 
-	// 7. Seed admin user
+	//  Seed admin user
 	if err := seedAdmin(db); err != nil {
 		log.Printf("Failed to seed admin: %v", err)
 		return err

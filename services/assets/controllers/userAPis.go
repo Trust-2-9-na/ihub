@@ -231,46 +231,50 @@ func (c *Construct) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch user and preload role
-
 	var user models.User
-	if err := c.DB.Model(&models.User{}).Preload("Role").Where("email = ?", input.Email).First(&user).Error; err != nil {
+	if err := c.DB.Preload("Role").Where("email = ?", input.Email).First(&user).Error; err != nil {
 		c.Json(w, http.StatusUnauthorized, "Invalid credentials", nil)
 		return
 	}
 
-	// Confirm role was preloaded
+	// Check role
 	if user.Role.Name == "" {
 		fmt.Println("⚠️ Role not found for user:", user.Email)
 		c.Json(w, http.StatusInternalServerError, "User role missing", nil)
 		return
 	}
-	fmt.Printf("User: %s, RoleID: %d, RoleName: %s\n", user.Email, user.RoleID, user.Role.Name)
-	// Compare hashed password
+
+	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
 		c.Json(w, http.StatusUnauthorized, "Invalid credentials", nil)
 		return
 	}
 
-	// Normalize role to lowercase for JWT
+	// Normalize role for token
 	role := strings.ToLower(user.Role.Name)
-	fmt.Println("✅ Role assigned to token:", role)
-	claims := &utils.Claims{
-		UserUUID: user.UserUUID,
-		Role:     user.Role.Name,
-	}
 
+	// Generate JWT
 	tokenString, err := utils.GenerateJWT(user.UserUUID, user.Role.Name)
 	if err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not generate token", nil)
 		return
 	}
 
-	fmt.Printf("Generated JWT for user %s: %+v\n", user.Email, claims)
+	// Track login in audit log
+	ip := r.RemoteAddr
+	metadata := map[string]interface{}{
+		"email": user.Email,
+		"role":  user.Role.Name,
+	}
+	if err := c.LogAudit(user.UserID, "LOGIN_SUCCESS", nil, nil, &ip, metadata); err != nil {
+		fmt.Println("⚠️ Failed to log audit:", err)
+	}
 
-	// Return token and user info
+	// Return response
 	c.Json(w, http.StatusOK, "Login successful", map[string]interface{}{
 		"token": tokenString,
 		"user": map[string]interface{}{
+			"user_id":   user.UserID,
 			"user_uuid": user.UserUUID,
 			"username":  user.Username,
 			"email":     user.Email,

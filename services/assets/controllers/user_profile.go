@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"web/services/assets/models"
-
-	"github.com/gorilla/mux"
 )
 
 type UpdateProfileInput struct {
@@ -26,13 +24,13 @@ type UpdateProfileInput struct {
 
 // GetProfile handles GET /api/profile/{user_id}
 func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	userID := vars["user_id"]
-
-	if userID == "" {
-		c.Json(w, http.StatusBadRequest, "Missing user_id", nil)
+	// Get authenticated user UUID from context (set by JWT middleware)
+	userUUIDCtx := r.Context().Value("user_uuid")
+	if userUUIDCtx == nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
+	userUUID := userUUIDCtx.(string)
 
 	// Fetch user with related profiles
 	var user models.User
@@ -40,15 +38,17 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 		Preload("StudentProfile").
 		Preload("MentorProfile").
 		Preload("SupervisorProfile").
-		First(&user, userID).Error; err != nil {
+		Where("user_uuid = ?", userUUID).
+		First(&user).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "User not found", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	// Build response depending on role
+	var resp map[string]interface{}
 	switch user.RoleID {
 	case 7: // Student
-		resp := map[string]interface{}{
+		resp = map[string]interface{}{
 			"user_id":    user.UserID,
 			"username":   user.Username,
 			"email":      user.Email,
@@ -63,10 +63,8 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 				"year_of_study": user.StudentProfile.YearOfStudy,
 			},
 		}
-		c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
-
 	case 8: // Mentor
-		resp := map[string]interface{}{
+		resp = map[string]interface{}{
 			"user_id":    user.UserID,
 			"username":   user.Username,
 			"email":      user.Email,
@@ -82,10 +80,8 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 				"years_exp":    user.MentorProfile.YearsExp,
 			},
 		}
-		c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
-
 	case 9: // Supervisor
-		resp := map[string]interface{}{
+		resp = map[string]interface{}{
 			"user_id":    user.UserID,
 			"username":   user.Username,
 			"email":      user.Email,
@@ -101,10 +97,8 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 				"years_exp":    user.SupervisorProfile.YearsExp,
 			},
 		}
-		c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
-
-	default: // Fallback for Admin or other roles
-		resp := map[string]interface{}{
+	default: // Admin or other roles
+		resp = map[string]interface{}{
 			"user_id":    user.UserID,
 			"username":   user.Username,
 			"email":      user.Email,
@@ -114,39 +108,34 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 			"address":    user.Profile.Address,
 			"bio":        user.Profile.Bio,
 		}
-		c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
 	}
+
+	c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
 }
 
-// api for profile update
-
+// UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	userIDStr := vars["user_id"]
-	if userIDStr == "" {
-		c.Json(w, http.StatusBadRequest, "Missing user_id", nil)
+	// Extract UUID from JWT context
+	userUUID, ok := r.Context().Value("user_uuid").(string)
+	if !ok || userUUID == "" {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	userID, err := strconv.ParseUint(userIDStr, 10, 64)
-	if err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid user_id", nil)
-		return
-	}
-
+	// Parse request body
 	var input UpdateProfileInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Fetch user with profiles
+	// Fetch user by UUID
 	var user models.User
 	if err := c.DB.Preload("Profile").
 		Preload("StudentProfile").
 		Preload("MentorProfile").
 		Preload("SupervisorProfile").
-		Where("user_id = ?", userID).
+		Where("user_uuid = ?", userUUID).
 		First(&user).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "User not found", nil)
 		return
@@ -169,12 +158,15 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if input.Bio != nil {
 		profile.Bio = input.Bio
 	}
+
 	if err := c.DB.Save(profile).Error; err != nil {
+		// Notification for failure
+		c.CreateNotification(user.UserID, "Profile Update Failed", "There was an error updating your profile. Please try again.")
 		c.Json(w, http.StatusInternalServerError, "Failed to update profile", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Update role-specific profile
+	// Role-specific updates
 	switch user.RoleID {
 	case 7: // Student
 		if user.StudentProfile != nil {
@@ -222,6 +214,20 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			c.DB.Save(user.SupervisorProfile)
 		}
 	}
+
+	// ✅ Notify user
+	c.CreateNotification(user.UserID, "Profile Updated Successfully", "Your profile has been updated successfully.")
+
+	// ✅ Audit log
+	ip := r.RemoteAddr
+	action := "update_profile"
+	entity := "user_profile"
+	metadata := map[string]interface{}{
+		"user_id":   user.UserID,
+		"user_uuid": user.UserUUID,
+		"username":  user.Username,
+	}
+	_ = c.LogAudit(user.UserID, action, &entity, &user.UserID, &ip, metadata)
 
 	c.Json(w, http.StatusOK, "Profile updated successfully", map[string]interface{}{
 		"profile": profile,
