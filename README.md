@@ -15,7 +15,7 @@ PORT=9000
 
 The port is use for serving http traffic, and the database connection is used for the database connection.
 
-***NOTE:*** This project should be used winth a PostgreSQL database
+***NOTE:*** This project should be used winth a PostgreSQL database.
 
 The above config shows that the web service will run on `http;//localhost:9000`
 
