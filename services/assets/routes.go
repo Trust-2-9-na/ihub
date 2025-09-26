@@ -27,6 +27,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// -----------------------------
 	admin := api.PathPrefix("/admin").Subrouter()
 	admin.Use(middlewares.RoleAuthorization("admin"))
+	admin.HandleFunc("/logs/audit", c.GetAuditLogs).Methods("GET")
+	admin.HandleFunc("/logs/jobs", c.GetJobLogs).Methods("GET")
 	admin.HandleFunc("/users", c.GetUsers).Methods("GET")
 	admin.HandleFunc("/students", c.GetStudents).Methods("GET")
 	admin.HandleFunc("/mentors", c.GetMentors).Methods("GET")
@@ -36,6 +38,13 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/roles", c.GetRoles).Methods("GET")
 	admin.HandleFunc("/roles/{id}", c.UpdateRole).Methods("PUT")
 	admin.HandleFunc("/roles/{id}", c.DeleteRole).Methods("DELETE")
+	admin.HandleFunc("/notifications", c.GetNotifications).Methods("GET")
+	admin.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
+	admin.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
+	admin.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
+	admin.HandleFunc("/notifications", c.AdminDeleteNotification).Methods("DELETE")
+	admin.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
+	admin.HandleFunc("/notifications", c.MarkAllNotificationsRead).Methods("PATCH")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -44,8 +53,13 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Use(middlewares.RoleAuthorization("supervisor"))
 	supervisor.HandleFunc("/users", c.GetUsers).Methods("GET")
 	supervisor.HandleFunc("/students", c.GetStudents).Methods("GET")
-	supervisor.HandleFunc("/profile/{user_id}", c.UpdateProfile).Methods("PUT")
-	supervisor.HandleFunc("/profile/{user_id}", c.GetProfile).Methods("GET")
+	supervisor.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
+	supervisor.HandleFunc("/profile", c.GetProfile).Methods("GET")
+	supervisor.HandleFunc("/notifications", c.GetNotifications).Methods("GET")
+	supervisor.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
+	supervisor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
+	supervisor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
+	supervisor.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
 
 	// -----------------------------
 	// MENTOR ROUTES
@@ -54,15 +68,24 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor.Use(middlewares.RoleAuthorization("mentor"))
 	mentor.HandleFunc("/users", c.GetUsers).Methods("GET")
 	mentor.HandleFunc("/students", c.GetStudents).Methods("GET")
-	mentor.HandleFunc("/profile/{user_id}", c.UpdateProfile).Methods("PUT")
-	mentor.HandleFunc("/profile/{user_id}", c.GetProfile).Methods("GET")
+	mentor.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
+	mentor.HandleFunc("/profile", c.GetProfile).Methods("GET")
+	mentor.HandleFunc("/notifications", c.GetNotifications).Methods("GET")
+	mentor.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
+	mentor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
+	mentor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
 
 	// -----------------------------
 	// STUDENT ROUTES
 	// -----------------------------
 	student := api.PathPrefix("/student").Subrouter()
 	student.Use(middlewares.RoleAuthorization("student"))
-	student.HandleFunc("/profile/{user_id}", c.GetProfile).Methods("GET")
-	student.HandleFunc("/profile/{user_id}", c.UpdateProfile).Methods("PUT")
+	student.HandleFunc("/profile", c.GetProfile).Methods("GET")
+	student.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
 	student.HandleFunc("/profile/avatar", c.UpdateAvatar).Methods("PATCH")
+	student.HandleFunc("/notifications", c.GetNotifications).Methods("GET")
+	student.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
+	student.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
+	student.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
+
 }
