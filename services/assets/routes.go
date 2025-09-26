@@ -45,6 +45,10 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/notifications", c.AdminDeleteNotification).Methods("DELETE")
 	admin.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
 	admin.HandleFunc("/notifications", c.MarkAllNotificationsRead).Methods("PATCH")
+	admin.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
+	admin.HandleFunc("/cohorts", c.DeleteCohort).Methods("DELETE")
+	admin.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
+	admin.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -60,6 +64,10 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
 	supervisor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
 	supervisor.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
+	supervisor.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
+	supervisor.HandleFunc("/cohorts", c.DeleteCohort).Methods("DELETE")
+	supervisor.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
+	supervisor.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 
 	// -----------------------------
 	// MENTOR ROUTES
@@ -74,6 +82,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
 	mentor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
 	mentor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
+	mentor.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 
 	// -----------------------------
 	// STUDENT ROUTES
@@ -87,5 +96,6 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.HandleFunc("/notifications/mark", c.MarkNotificationRead).Methods("PATCH")
 	student.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
 	student.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
+	student.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 
 }

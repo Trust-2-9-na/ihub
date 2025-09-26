@@ -34,8 +34,8 @@ type User struct {
 type UserProfile struct {
 	ProfileID uint64  `json:"profile_id" gorm:"primaryKey;autoIncrement"`
 	UserID    uint64  `json:"user_id" gorm:"unique;not null"`
-	FirstName string  `json:"first_name" gorm:"size:50;index;not null"`
-	LastName  string  `json:"last_name" gorm:"size:50;index;not null"`
+	FirstName string  `json:"first_name" gorm:"size:100;index;not null"`
+	LastName  string  `json:"last_name" gorm:"size:100;index;not null"`
 	Phone     *string `json:"phone,omitempty"`
 	Address   *string `json:"address,omitempty"`
 	Bio       *string `json:"bio,omitempty"`

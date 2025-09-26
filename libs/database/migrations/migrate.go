@@ -3,10 +3,9 @@ package migrations
 import (
 	"log"
 	"strings"
-
 	"web/libs/database"
 	"web/services/assets/models"
-	"web/services/utils" // for HashPassword
+	"web/services/utils"
 
 	"gorm.io/gorm"
 )
@@ -16,9 +15,9 @@ func Migrate() error {
 	dbService := database.New()
 	db := dbService.DB()
 
-	// 1. Migrate Roles and Cohorts first
-	if err := db.AutoMigrate(&models.Role{}, &models.Cohort{}); err != nil {
-		log.Printf("Migration failed for Roles/Cohorts: %v", err)
+	// 1. Migrate Roles first
+	if err := db.AutoMigrate(&models.Role{}); err != nil {
+		log.Printf("Migration failed for Roles: %v", err)
 		return err
 	}
 
@@ -28,7 +27,7 @@ func Migrate() error {
 		return err
 	}
 
-	// 3. Migrate Users (depends on Roles and Cohorts)
+	// 3. Migrate Users (depends on Roles)
 	if err := db.AutoMigrate(&models.User{}); err != nil {
 		log.Printf("Migration failed for Users: %v", err)
 		return err
@@ -45,33 +44,40 @@ func Migrate() error {
 		log.Printf("Migration failed for role-specific profiles: %v", err)
 		return err
 	}
-	// 6. migrate audity logs
+
+	// 6. Migrate Cohorts (independent table)
+	if err := db.AutoMigrate(&models.Cohort{}); err != nil {
+		log.Printf("Migration failed for Cohorts: %v", err)
+		return err
+	}
+
+	// 7. Migrate Audit Logs
 	if err := db.AutoMigrate(&models.AuditLog{}); err != nil {
-		log.Printf("Migration failed for Audity Logs: %v", err)
+		log.Printf("Migration failed for Audit Logs: %v", err)
 		return err
 	}
 
-	// 7. migrate jobs logs
+	// 8. Migrate Job Logs
 	if err := db.AutoMigrate(&models.JobLog{}); err != nil {
-		log.Printf("Migration failed for Jobs Logs: %v", err)
+		log.Printf("Migration failed for Job Logs: %v", err)
 		return err
 	}
 
-	// 8. Migrate Proposals
+	// 9. Migrate Proposals
 	if err := db.AutoMigrate(&models.Proposal{}); err != nil {
 		log.Printf("Migration failed for Proposals: %v", err)
 		return err
 	}
 
-	// 9. migrate notifications
+	// 10. Migrate Notifications
 	if err := db.AutoMigrate(&models.Notification{}); err != nil {
-		log.Printf("Migration failed for notifications: %v", err)
+		log.Printf("Migration failed for Notifications: %v", err)
 		return err
 	}
 
 	log.Println("All migrations ran successfully!")
 
-	//  Seed admin user
+	// Seed admin user
 	if err := seedAdmin(db); err != nil {
 		log.Printf("Failed to seed admin: %v", err)
 		return err
@@ -95,20 +101,16 @@ func seedRoles(db *gorm.DB) error {
 		err := db.Where("LOWER(name) = ?", strings.ToLower(r.Name)).First(&existing).Error
 		if err != nil {
 			if err == gorm.ErrRecordNotFound {
-				// Role does not exist, create it
 				if err := db.Create(&r).Error; err != nil {
 					return err
 				}
 			} else {
 				return err
 			}
-		} else {
-			// Role exists; update description if empty
-			if existing.Description == "" {
-				existing.Description = r.Description
-				if err := db.Save(&existing).Error; err != nil {
-					return err
-				}
+		} else if existing.Description == "" {
+			existing.Description = r.Description
+			if err := db.Save(&existing).Error; err != nil {
+				return err
 			}
 		}
 	}

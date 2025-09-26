@@ -32,13 +32,26 @@ func (c *Construct) LogAudit(userID uint64, action string, entity *string, entit
 
 // helper function for jobs log
 func (c *Construct) StartJob(jobName string, metadata map[string]interface{}) (*models.JobLog, error) {
+	var metadataJSON datatypes.JSON
+	if metadata != nil {
+		b, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+		metadataJSON = datatypes.JSON(b)
+	}
+
 	job := models.JobLog{
 		JobName:  jobName,
 		Status:   "Started",
-		Metadata: metadata,
+		Metadata: metadataJSON,
 	}
-	err := c.DB.Create(&job).Error
-	return &job, err
+
+	if err := c.DB.Create(&job).Error; err != nil {
+		return nil, err
+	}
+
+	return &job, nil
 }
 
 func (c *Construct) EndJob(job *models.JobLog, status string, message *string) error {

@@ -27,6 +27,39 @@ type AdminUserResponse struct {
 	RoleInfo interface{} `json:"role_info,omitempty"` // Student/Mentor/Supervisor summary
 }
 
+// ================== STUDENT RESPONSE ==================
+type StudentResponse struct {
+	UserID         uint64                `json:"user_id"`
+	UserUUID       string                `json:"user_uuid"`
+	Username       string                `json:"username"`
+	Email          string                `json:"email"`
+	IsActive       bool                  `json:"is_active"`
+	Profile        models.UserProfile    `json:"profile"`
+	StudentProfile models.StudentProfile `json:"student_profile"`
+}
+
+// ================== MENTOR RESPONSE ==================
+type MentorResponse struct {
+	UserID        uint64               `json:"user_id"`
+	UserUUID      string               `json:"user_uuid"`
+	Username      string               `json:"username"`
+	Email         string               `json:"email"`
+	IsActive      bool                 `json:"is_active"`
+	Profile       models.UserProfile   `json:"profile"`
+	MentorProfile models.MentorProfile `json:"mentor_profile"`
+}
+
+// ================== SUPERVISOR RESPONSE ==================
+type SupervisorResponse struct {
+	UserID            uint64                   `json:"user_id"`
+	UserUUID          string                   `json:"user_uuid"`
+	Username          string                   `json:"username"`
+	Email             string                   `json:"email"`
+	IsActive          bool                     `json:"is_active"`
+	Profile           models.UserProfile       `json:"profile"`
+	SupervisorProfile models.SupervisorProfile `json:"supervisor_profile"`
+}
+
 func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 	var users []models.User
 
@@ -96,31 +129,24 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// get students only
-type StudentResponse struct {
-	UserID         uint64                `json:"user_id"`
-	UserUUID       string                `json:"user_uuid"`
-	Username       string                `json:"username"`
-	Email          string                `json:"email"`
-	IsActive       bool                  `json:"is_active"`
-	Profile        models.UserProfile    `json:"profile"`
-	StudentProfile models.StudentProfile `json:"student_profile"`
-}
-
+// ================== STUDENTS ==================
 func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
 	var users []models.User
 
 	if err := c.DB.Preload("Profile").
 		Preload("StudentProfile").
-		Where("role_id = ?", 7). // 7 = Student
+		Joins("JOIN roles ON roles.role_id = users.role_id").
+		Where("LOWER(roles.name) = ?", "student").
 		Find(&users).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Map to response struct
 	var response []StudentResponse
 	for _, u := range users {
+		if u.StudentProfile == nil {
+			continue // skip users without student profile
+		}
 		response = append(response, StudentResponse{
 			UserID:         u.UserID,
 			UserUUID:       u.UserUUID,
@@ -135,33 +161,14 @@ func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
 	c.Json(w, http.StatusOK, "Students retrieved successfully", map[string]interface{}{"students": response})
 }
 
-type MentorResponse struct {
-	UserID        uint64               `json:"user_id"`
-	UserUUID      string               `json:"user_uuid"`
-	Username      string               `json:"username"`
-	Email         string               `json:"email"`
-	IsActive      bool                 `json:"is_active"`
-	Profile       models.UserProfile   `json:"profile"`
-	MentorProfile models.MentorProfile `json:"mentor_profile"`
-}
-
-type SupervisorResponse struct {
-	UserID            uint64                   `json:"user_id"`
-	UserUUID          string                   `json:"user_uuid"`
-	Username          string                   `json:"username"`
-	Email             string                   `json:"email"`
-	IsActive          bool                     `json:"is_active"`
-	Profile           models.UserProfile       `json:"profile"`
-	SupervisorProfile models.SupervisorProfile `json:"supervisor_profile"`
-}
-
-// get mentors only
+// ================== MENTORS ==================
 func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
 	var users []models.User
 
 	if err := c.DB.Preload("Profile").
 		Preload("MentorProfile").
-		Where("role_id = ?", 8). // 8 = Mentor
+		Joins("JOIN roles ON roles.role_id = users.role_id").
+		Where("LOWER(roles.name) = ?", "mentor").
 		Find(&users).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch mentors", map[string]interface{}{"error": err.Error()})
 		return
@@ -186,13 +193,14 @@ func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
 	c.Json(w, http.StatusOK, "Mentors retrieved successfully", map[string]interface{}{"mentors": response})
 }
 
-// get supervisors only
+// ================== SUPERVISORS ==================
 func (c *Construct) GetSupervisors(w http.ResponseWriter, r *http.Request) {
 	var users []models.User
 
 	if err := c.DB.Preload("Profile").
 		Preload("SupervisorProfile").
-		Where("role_id = ?", 9). // 9 = Supervisor
+		Joins("JOIN roles ON roles.role_id = users.role_id").
+		Where("LOWER(roles.name) = ?", "supervisor").
 		Find(&users).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch supervisors", map[string]interface{}{"error": err.Error()})
 		return
