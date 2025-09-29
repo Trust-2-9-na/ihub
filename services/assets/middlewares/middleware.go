@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"web/services/assets/models"
 	"web/services/utils"
+
+	"gorm.io/gorm"
 )
 
-// RoleAuthorization validates JWT and checks for allowed roles
-func RoleAuthorization(allowedRoles ...string) func(http.Handler) http.Handler {
+// RoleAuthorization validates JWT, checks allowed roles, and ensures user is active
+func RoleAuthorization(db *gorm.DB, allowedRoles ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -28,6 +31,19 @@ func RoleAuthorization(allowedRoles ...string) func(http.Handler) http.Handler {
 
 			if claims.Role == "" {
 				http.Error(w, "Access denied: role missing", http.StatusForbidden)
+				return
+			}
+
+			// Fetch user from DB to check active status
+			var user models.User
+			if err := db.Where("user_uuid = ?", claims.UserUUID).First(&user).Error; err != nil {
+				http.Error(w, "User not found", http.StatusUnauthorized)
+				return
+			}
+
+			// ✅ Check if user is active
+			if !user.IsActive {
+				http.Error(w, "Account disabled", http.StatusForbidden)
 				return
 			}
 

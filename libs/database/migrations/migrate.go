@@ -63,17 +63,19 @@ func Migrate() error {
 		return err
 	}
 
-	// 9. Migrate Proposals
-	if err := db.AutoMigrate(&models.Proposal{}); err != nil {
-		log.Printf("Migration failed for Proposals: %v", err)
-		return err
-	}
+	// 9. Migrate user teams(junction table for users and teams)
 
 	// 10. Migrate Notifications
 	if err := db.AutoMigrate(&models.Notification{}); err != nil {
 		log.Printf("Migration failed for Notifications: %v", err)
 		return err
 	}
+
+	// 11. Migrate Teams
+
+	// 12. Migrate Proposals
+
+	// 13. migrate proposal review
 
 	log.Println("All migrations ran successfully!")
 

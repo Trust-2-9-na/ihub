@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"web/libs/database"
 	"web/services/assets/controllers"
 	"web/services/assets/middlewares"
 
@@ -10,10 +11,13 @@ import (
 
 func NewRouter(r *mux.Router, DB *gorm.DB) {
 	c := &controllers.Construct{DB: DB}
-
 	// -----------------------------
 	// PUBLIC ROUTES
 	// -----------------------------
+
+	dbService := database.New()
+	db := dbService.DB()
+
 	r.HandleFunc("/assets", c.Index).Methods("GET")
 	api := r.PathPrefix("/api").Subrouter()
 
@@ -26,14 +30,14 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// ADMIN ROUTES
 	// -----------------------------
 	admin := api.PathPrefix("/admin").Subrouter()
-	admin.Use(middlewares.RoleAuthorization("admin"))
+	admin.Use(middlewares.RoleAuthorization(db, "admin"))
 	admin.HandleFunc("/logs/audit", c.GetAuditLogs).Methods("GET")
 	admin.HandleFunc("/logs/jobs", c.GetJobLogs).Methods("GET")
 	admin.HandleFunc("/users", c.GetUsers).Methods("GET")
 	admin.HandleFunc("/students", c.GetStudents).Methods("GET")
 	admin.HandleFunc("/mentors", c.GetMentors).Methods("GET")
 	admin.HandleFunc("/supervisors", c.GetSupervisors).Methods("GET")
-	admin.HandleFunc("/users/{uuid}", c.DeleteUser).Methods("DELETE")
+	admin.HandleFunc("/users/{uuid}/status", c.ToggleUserStatus).Methods("PATCH")
 	admin.HandleFunc("/roles", c.CreateRole).Methods("POST")
 	admin.HandleFunc("/roles", c.GetRoles).Methods("GET")
 	admin.HandleFunc("/roles/{id}", c.UpdateRole).Methods("PUT")
@@ -54,7 +58,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// SUPERVISOR ROUTES
 	// -----------------------------
 	supervisor := api.PathPrefix("/supervisor").Subrouter()
-	supervisor.Use(middlewares.RoleAuthorization("supervisor"))
+	supervisor.Use(middlewares.RoleAuthorization(db, "supervisor"))
 	supervisor.HandleFunc("/users", c.GetUsers).Methods("GET")
 	supervisor.HandleFunc("/students", c.GetStudents).Methods("GET")
 	supervisor.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
@@ -73,7 +77,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// MENTOR ROUTES
 	// -----------------------------
 	mentor := api.PathPrefix("/mentor").Subrouter()
-	mentor.Use(middlewares.RoleAuthorization("mentor"))
+	mentor.Use(middlewares.RoleAuthorization(db, "mentor"))
 	mentor.HandleFunc("/users", c.GetUsers).Methods("GET")
 	mentor.HandleFunc("/students", c.GetStudents).Methods("GET")
 	mentor.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
@@ -88,7 +92,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// STUDENT ROUTES
 	// -----------------------------
 	student := api.PathPrefix("/student").Subrouter()
-	student.Use(middlewares.RoleAuthorization("student"))
+	student.Use(middlewares.RoleAuthorization(db, "student"))
 	student.HandleFunc("/profile", c.GetProfile).Methods("GET")
 	student.HandleFunc("/profile", c.UpdateProfile).Methods("PUT")
 	student.HandleFunc("/profile/avatar", c.UpdateAvatar).Methods("PATCH")

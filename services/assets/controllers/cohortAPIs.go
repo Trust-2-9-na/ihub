@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"time"
 	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
@@ -34,10 +33,10 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Name        string    `json:"name"`
-		Description string    `json:"description"`
-		StartDate   time.Time `json:"start_date"`
-		EndDate     time.Time `json:"end_date"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		StartDate   string `json:"start_date"`
+		EndDate     string `json:"end_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
@@ -218,10 +217,10 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	userUUID := userUUIDCtx.(string)
 
 	var input struct {
-		Name        *string    `json:"name,omitempty"`
-		Description *string    `json:"description,omitempty"`
-		StartDate   *time.Time `json:"start_date,omitempty"`
-		EndDate     *time.Time `json:"end_date,omitempty"`
+		Name        *string `json:"name,omitempty"`
+		Description *string `json:"description,omitempty"`
+		StartDate   *string `json:"start_date,omitempty"`
+		EndDate     *string `json:"end_date,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})

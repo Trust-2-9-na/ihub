@@ -225,7 +225,7 @@ func (c *Construct) GetSupervisors(w http.ResponseWriter, r *http.Request) {
 	c.Json(w, http.StatusOK, "Supervisors retrieved successfully", map[string]interface{}{"supervisors": response})
 }
 
-// -------------------- LOGIN --------------------
+// -------------------- LOGIN --------------------// -------------------- LOGIN --------------------
 type LoginInput struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -242,6 +242,12 @@ func (c *Construct) Login(w http.ResponseWriter, r *http.Request) {
 	var user models.User
 	if err := c.DB.Preload("Role").Where("email = ?", input.Email).First(&user).Error; err != nil {
 		c.Json(w, http.StatusUnauthorized, "Invalid credentials", nil)
+		return
+	}
+
+	// ✅ Block disabled accounts right away
+	if !user.IsActive {
+		c.Json(w, http.StatusForbidden, "Account disabled", nil)
 		return
 	}
 
@@ -278,22 +284,15 @@ func (c *Construct) Login(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("⚠️ Failed to log audit:", err)
 	}
 
-	// Return response
+	// Return success response
 	c.Json(w, http.StatusOK, "Login successful", map[string]interface{}{
 		"token": tokenString,
-		"user": map[string]interface{}{
-			"user_id":   user.UserID,
-			"user_uuid": user.UserUUID,
-			"username":  user.Username,
-			"email":     user.Email,
-			"role":      role,
-			"role_id":   user.RoleID,
-		},
+		"role":  role,
 	})
 }
 
 // -------------------- DELETE USER --------------------
-func (c *Construct) DeleteUser(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) ToggleUserStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	userUUID := vars["uuid"] // get UUID from URL
 	if userUUID == "" {
@@ -308,35 +307,20 @@ func (c *Construct) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete linked UserProfile
-	if err := c.DB.Where("user_id = ?", user.UserID).Delete(&models.UserProfile{}).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to delete user profile", map[string]interface{}{"error": err.Error()})
+	// Toggle IsActive
+	user.IsActive = !user.IsActive
+	status := "disabled"
+	if user.IsActive {
+		status = "enabled"
+	}
+
+	if err := c.DB.Save(&user).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to update user status", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Delete linked StudentProfile
-	if err := c.DB.Where("user_id = ?", user.UserID).Delete(&models.StudentProfile{}).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to delete student profile", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Delete linked MentorProfile
-	if err := c.DB.Where("user_id = ?", user.UserID).Delete(&models.MentorProfile{}).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to delete mentor profile", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Delete linked SupervisorProfile
-	if err := c.DB.Where("user_id = ?", user.UserID).Delete(&models.SupervisorProfile{}).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to delete supervisor profile", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Finally, delete the user
-	if err := c.DB.Delete(&user).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to delete user", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	c.Json(w, http.StatusOK, "User and related profiles deleted successfully", nil)
+	c.Json(w, http.StatusOK, fmt.Sprintf("User %s successfully", status), map[string]interface{}{
+		"user_uuid": user.UserUUID,
+		"is_active": user.IsActive,
+	})
 }
