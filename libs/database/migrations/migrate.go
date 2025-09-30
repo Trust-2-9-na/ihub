@@ -15,67 +15,105 @@ func Migrate() error {
 	dbService := database.New()
 	db := dbService.DB()
 
-	// 1. Migrate Roles first
+	// 1️⃣ Roles
 	if err := db.AutoMigrate(&models.Role{}); err != nil {
 		log.Printf("Migration failed for Roles: %v", err)
 		return err
 	}
 
-	// 2. Seed base roles
 	if err := seedRoles(db); err != nil {
 		log.Printf("Failed to seed roles: %v", err)
 		return err
 	}
 
-	// 3. Migrate Users (depends on Roles)
+	// 2️⃣ Users
 	if err := db.AutoMigrate(&models.User{}); err != nil {
 		log.Printf("Migration failed for Users: %v", err)
 		return err
 	}
 
-	// 4. Migrate UserProfiles (after Users)
+	// 3️⃣ User Profiles
 	if err := db.AutoMigrate(&models.UserProfile{}); err != nil {
 		log.Printf("Migration failed for UserProfiles: %v", err)
 		return err
 	}
 
-	// 5. Migrate role-specific profiles (after Users)
-	if err := db.AutoMigrate(&models.StudentProfile{}, &models.MentorProfile{}, &models.SupervisorProfile{}); err != nil {
+	// 4️⃣ Role-specific profiles
+	if err := db.AutoMigrate(
+		&models.StudentProfile{},
+		&models.MentorProfile{},
+		&models.SupervisorProfile{},
+	); err != nil {
 		log.Printf("Migration failed for role-specific profiles: %v", err)
 		return err
 	}
 
-	// 6. Migrate Cohorts (independent table)
+	// 5️⃣ Teams
+	if err := db.AutoMigrate(&models.Team{}); err != nil {
+		log.Printf("Migration failed for Teams: %v", err)
+		return err
+	}
+	// 6 user teams
+	err := db.Exec(`
+CREATE TABLE IF NOT EXISTS user_teams (
+    user_id BIGINT NOT NULL,
+    team_id BIGINT NOT NULL,
+    role VARCHAR(20) DEFAULT 'Member',
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, team_id),
+    CONSTRAINT fk_userteams_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_userteams_team FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`).Error
+	if err != nil {
+		log.Printf("Migration failed for UserTeams: %v", err)
+		return err
+	}
+
+	// 7️⃣ Cohorts
 	if err := db.AutoMigrate(&models.Cohort{}); err != nil {
 		log.Printf("Migration failed for Cohorts: %v", err)
 		return err
 	}
 
-	// 7. Migrate Audit Logs
+	// 8️⃣ Audit Logs
 	if err := db.AutoMigrate(&models.AuditLog{}); err != nil {
 		log.Printf("Migration failed for Audit Logs: %v", err)
 		return err
 	}
+	// submission windows
+	if err := db.AutoMigrate(&models.ProposalSubmissionWindow{}); err != nil {
+		log.Printf("Migration failed for submission windows: %v", err)
+		return err
+	}
 
-	// 8. Migrate Job Logs
+	// 9️⃣ Job Logs
 	if err := db.AutoMigrate(&models.JobLog{}); err != nil {
 		log.Printf("Migration failed for Job Logs: %v", err)
 		return err
 	}
 
-	// 9. Migrate user teams(junction table for users and teams)
+	// 🔟 Proposals
+	if err := db.AutoMigrate(&models.Proposal{}); err != nil {
+		log.Printf("Migration failed for Proposals: %v", err)
+		return err
+	}
 
-	// 10. Migrate Notifications
+	// 1️⃣1️⃣ Proposal Reviews (if Proposals exists)
+	if db.Migrator().HasTable(&models.Proposal{}) {
+		if err := db.AutoMigrate(&models.ProposalReview{}); err != nil {
+			log.Printf("Migration failed for Proposal Reviews: %v", err)
+			return err
+		}
+	} else {
+		log.Println("⚠️ Skipping ProposalReviews migration: proposals table not found")
+	}
+
+	// 1️⃣2️⃣ Notifications
 	if err := db.AutoMigrate(&models.Notification{}); err != nil {
 		log.Printf("Migration failed for Notifications: %v", err)
 		return err
 	}
-
-	// 11. Migrate Teams
-
-	// 12. Migrate Proposals
-
-	// 13. migrate proposal review
 
 	log.Println("All migrations ran successfully!")
 

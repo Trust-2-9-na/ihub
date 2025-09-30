@@ -1,13 +1,14 @@
 // web/services/assets/models/user.go
 package models
 
-import "time"
+import (
+	"time"
+)
 
 type Role struct {
 	RoleID      uint   `json:"role_id" gorm:"primaryKey;autoIncrement"`
 	Name        string `json:"name" gorm:"size:50;unique;not null"`
 	Description string `json:"description" gorm:"type:text"`
-	// do NOT define Users slice here for migration
 }
 
 type User struct {
@@ -24,10 +25,11 @@ type User struct {
 	Profile      UserProfile `gorm:"foreignKey:UserID"`                   // one-to-one link
 	Role         Role        `gorm:"foreignKey:RoleID;references:RoleID"` // links User.RoleID -> Role.RoleID
 	// belongs to Role
-	Proposals         []Proposal         `gorm:"foreignKey:SubmittedBy"`
+
 	StudentProfile    *StudentProfile    `gorm:"foreignKey:UserID"`
 	MentorProfile     *MentorProfile     `gorm:"foreignKey:UserID"`
 	SupervisorProfile *SupervisorProfile `gorm:"foreignKey:UserID"`
+	Teams             []Team             `gorm:"many2many:user_teams;"`
 }
 
 // user profile model
