@@ -8,19 +8,32 @@ import (
 	"web/services/assets/models"
 )
 
-// ======================Create API for submssion window================
+// ======================Create API for submission window================
 func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		Title     string    `json:"title"`
-		StartDate time.Time `json:"start_date"`
-		Deadline  time.Time `json:"deadline"`
+		Title     string `json:"title"`
+		StartDate string `json:"start_date"` // expect string in "2006-01-02" format
+		Deadline  string `json:"deadline"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if payload.Title == "" || payload.Deadline.Before(payload.StartDate) {
+	// Parse dates
+	start, err := time.Parse("2006-01-02", payload.StartDate)
+	if err != nil {
+		http.Error(w, "invalid start_date format", http.StatusBadRequest)
+		return
+	}
+	deadline, err := time.Parse("2006-01-02", payload.Deadline)
+	if err != nil {
+		http.Error(w, "invalid deadline format", http.StatusBadRequest)
+		return
+	}
+
+	if payload.Title == "" || deadline.Before(start) {
 		http.Error(w, "invalid title or dates", http.StatusBadRequest)
 		return
 	}
@@ -35,8 +48,8 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 
 	window := models.ProposalSubmissionWindow{
 		Title:       payload.Title,
-		StartDate:   payload.StartDate,
-		Deadline:    payload.Deadline,
+		StartDate:   start,
+		Deadline:    deadline,
 		CreatedByID: supervisor.UserID,
 	}
 
@@ -56,10 +69,10 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 	for _, student := range students {
 		message := fmt.Sprintf(
 			"Dear %s, a new proposal submission window '%s' is now open.\nSubmit your proposal between %s and %s.",
-			student.Profile.FirstName, // Assuming Profile relation exists
+			student.Profile.FirstName,
 			window.Title,
-			payload.StartDate.Format("02 Jan 2006"),
-			payload.Deadline.Format("02 Jan 2006"),
+			start.Format("02 Jan 2006"),
+			deadline.Format("02 Jan 2006"),
 		)
 		_ = c.CreateNotification(student.UserID, "Proposal Submission Open", message)
 	}
@@ -67,24 +80,32 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 	// Audit log
 	_ = c.LogAudit(supervisor.UserID, "create_submission_window", nil, nil, nil, nil)
 
+	// Respond with string dates
+	resp := map[string]interface{}{
+		"window_id":  window.WindowID,
+		"title":      window.Title,
+		"start_date": start.Format("2006-01-02"),
+		"deadline":   deadline.Format("2006-01-02"),
+		"created_by": supervisor.Profile.FirstName + " " + supervisor.Profile.LastName,
+		"created_at": window.CreatedAt.Format("2006-01-02 15:04:05"),
+		"updated_at": window.UpdatedAt.Format("2006-01-02 15:04:05"),
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(window)
+	json.NewEncoder(w).Encode(resp)
 }
 
 //----------------------------GETALL---------------------
 
 func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request) {
 	var windows []models.ProposalSubmissionWindow
-
-	// Preload CreatedBy.Profile so we can get first and last name
 	if err := c.DB.Preload("CreatedBy.Profile").Order("start_date asc").Find(&windows).Error; err != nil {
 		http.Error(w, "failed to fetch submission windows", http.StatusInternalServerError)
 		return
 	}
 
-	// Build response with full name
-	var resp []map[string]interface{}
+	resp := make([]map[string]interface{}, 0)
 	for _, wdw := range windows {
 		supervisorName := ""
 		if wdw.CreatedBy.UserID != 0 {
@@ -94,56 +115,14 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 		resp = append(resp, map[string]interface{}{
 			"window_id":  wdw.WindowID,
 			"title":      wdw.Title,
-			"start_date": wdw.StartDate,
-			"deadline":   wdw.Deadline,
+			"start_date": wdw.StartDate.Format("2006-01-02"),
+			"deadline":   wdw.Deadline.Format("2006-01-02"),
 			"created_by": supervisorName,
-			"created_at": wdw.CreatedAt,
-			"updated_at": wdw.UpdatedAt,
+			"created_at": wdw.CreatedAt.Format("2006-01-02 15:04:05"),
+			"updated_at": wdw.UpdatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-// checking all available windows
-func (c *Construct) CheckSubmissionWindows() error {
-	var windows []models.ProposalSubmissionWindow
-	if err := c.DB.Find(&windows).Error; err != nil {
-		return err
-	}
-
-	now := time.Now()
-
-	for _, window := range windows {
-		// Compute days left
-		daysLeft := int(window.Deadline.Sub(now).Hours() / 24)
-
-		// Fetch proposals linked to this window
-		var proposals []models.Proposal
-		_ = c.DB.Where("window_id = ?", window.WindowID).Find(&proposals)
-
-		for _, proposal := range proposals {
-			switch daysLeft {
-			case 3:
-				_ = c.CreateNotification(proposal.SubmittedByID, "Proposal Deadline Approaching",
-					"Your proposal '"+proposal.Title+"' is due in 3 days (deadline: "+window.Deadline.Format("2006-01-02")+")")
-			case 1:
-				_ = c.CreateNotification(proposal.SubmittedByID, "Proposal Deadline Tomorrow",
-					"Your proposal '"+proposal.Title+"' is due tomorrow (deadline: "+window.Deadline.Format("2006-01-02")+")")
-			case 0:
-				_ = c.CreateNotification(proposal.SubmittedByID, "Proposal Deadline Today",
-					"Your proposal '"+proposal.Title+"' is due today (deadline: "+window.Deadline.Format("2006-01-02")+")")
-			default:
-				if daysLeft < 0 && proposal.Status != "Expired" {
-					proposal.Status = "Expired"
-					_ = c.DB.Save(&proposal)
-					_ = c.CreateNotification(proposal.SubmittedByID, "Proposal Expired",
-						"Your proposal '"+proposal.Title+"' has passed its submission deadline ("+window.Deadline.Format("2006-01-02")+")")
-				}
-			}
-		}
-	}
-
-	return nil
 }
