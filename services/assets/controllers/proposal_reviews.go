@@ -127,7 +127,9 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 		"proposal": map[string]interface{}{
 			"id":       proposal.ProposalID,
 			"title":    proposal.Title,
+			"subfield": proposal.Subfield,
 			"abstract": proposal.Abstract,
+			"category": proposal.Category,
 			"status":   proposal.Status,
 			"cohort": func() string {
 				if proposal.Cohort != nil {
@@ -221,6 +223,8 @@ func (c *Construct) GetReviews(w http.ResponseWriter, r *http.Request) {
 			"id":       proposal.ProposalID,
 			"title":    proposal.Title,
 			"abstract": proposal.Abstract,
+			"category": proposal.Category,
+			"subfield": proposal.Subfield,
 			"status":   proposal.Status,
 			"cohort": func() string {
 				if proposal.Cohort != nil {
@@ -278,6 +282,8 @@ func (c *Construct) GetMyReviews(w http.ResponseWriter, r *http.Request) {
 				"id":       rev.Proposal.ProposalID,
 				"title":    rev.Proposal.Title,
 				"abstract": rev.Proposal.Abstract,
+				"category": rev.Proposal.Category,
+				"subfield": rev.Proposal.Subfield,
 				"status":   rev.Proposal.Status,
 				"cohort": func() string {
 					if rev.Proposal.Cohort != nil {
@@ -405,6 +411,8 @@ func (c *Construct) UpdateReview(w http.ResponseWriter, r *http.Request) {
 			"id":       review.Proposal.ProposalID,
 			"title":    review.Proposal.Title,
 			"abstract": review.Proposal.Abstract,
+			"category": review.Proposal.Category,
+			"subfield": review.Proposal.Subfield,
 			"status":   review.Proposal.Status,
 			"cohort": func() string {
 				if review.Proposal.Cohort != nil {

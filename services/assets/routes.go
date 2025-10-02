@@ -50,15 +50,17 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
 	admin.HandleFunc("/notifications", c.MarkAllNotificationsRead).Methods("PATCH")
 	admin.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
-	admin.HandleFunc("/cohorts", c.DeleteCohort).Methods("DELETE")
+	admin.HandleFunc("/cohorts", c.DeleteCohorts).Methods("DELETE")
 	admin.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 	admin.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
+	admin.HandleFunc("/cohort/overview/{cohort_id}", c.GetCohortOverview).Methods("GET")
 	admin.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list all reviews
 	admin.HandleFunc("/reviews", c.AddReview).Methods("POST")
 	admin.HandleFunc("/proposals", c.GetProposals).Methods("GET")                  // list all proposals
 	admin.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // view single proposal
 	admin.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
 	admin.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
+	admin.HandleFunc("proposals/archived", c.GetArchivedProposals).Methods("GET")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -75,12 +77,14 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
 	supervisor.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
 	supervisor.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
-	supervisor.HandleFunc("/cohorts", c.DeleteCohort).Methods("DELETE")
+	supervisor.HandleFunc("/cohorts", c.DeleteCohorts).Methods("DELETE")
 	supervisor.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
+	supervisor.HandleFunc("/cohort/overview/{cohort_id}", c.GetCohortOverview).Methods("GET")
 	supervisor.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 	supervisor.HandleFunc("/proposals", c.GetProposals).Methods("GET")                  // list all proposals
 	supervisor.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // get single proposal
 	supervisor.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
+	supervisor.HandleFunc("proposals/archived", c.GetArchivedProposals).Methods("GET")
 	supervisor.HandleFunc("/reviews", c.GetReviews).Methods("GET")
 	supervisor.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list all reviews
 	supervisor.HandleFunc("/reviews", c.AddReview).Methods("POST")
@@ -125,6 +129,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.HandleFunc("/proposals", c.CreateProposal).Methods("POST") // submit new proposal
 	student.HandleFunc("/proposals", c.GetOwnProposals).Methods("GET") // list own proposals
 	student.HandleFunc("/proposals/{proposal_id}", c.UpdateProposal).Methods("PUT")
+	student.HandleFunc("proposals/archived", c.GetArchivedProposals).Methods("GET")
+	student.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
 	student.HandleFunc("/reviews", c.GetReviews).Methods("GET")
 	student.HandleFunc("/submission-windows", c.GetSubmissionWindows).Methods("GET")
 	student.HandleFunc("/proposals", c.DeleteProposal).Methods("DELETE")

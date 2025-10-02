@@ -6,123 +6,246 @@ import (
 	"net/http"
 	"time"
 	"web/services/assets/models"
+	"strings"
 )
+//============Creating proposal submission window with dynamic filtering ============
 
-// ======================Create API for submission window================
 func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Title     string `json:"title"`
-		StartDate string `json:"start_date"` // expect string in "2006-01-02" format
-		Deadline  string `json:"deadline"`
-	}
+    // ---------------------------
+    // Parse JSON payload
+    // ---------------------------
+    var payload struct {
+        Title       string  `json:"title"`
+        StartDate   string  `json:"start_date"` // "2006-01-02"
+        Deadline    string  `json:"deadline"`
+        School      *string `json:"school,omitempty"`
+        Program     *string `json:"program,omitempty"`
+        YearOfStudy *string `json:"year_of_study,omitempty"`
+    }
 
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+        c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
+        return
+    }
 
-	// Parse dates
-	start, err := time.Parse("2006-01-02", payload.StartDate)
-	if err != nil {
-		http.Error(w, "invalid start_date format", http.StatusBadRequest)
-		return
-	}
-	deadline, err := time.Parse("2006-01-02", payload.Deadline)
-	if err != nil {
-		http.Error(w, "invalid deadline format", http.StatusBadRequest)
-		return
-	}
+    // ---------------------------
+    // Validate dates
+    // ---------------------------
+    start, err := time.Parse("2006-01-02", payload.StartDate)
+    if err != nil {
+        c.Json(w, http.StatusBadRequest, "Invalid start_date format", nil)
+        return
+    }
 
-	if payload.Title == "" || deadline.Before(start) {
-		http.Error(w, "invalid title or dates", http.StatusBadRequest)
-		return
-	}
+    deadline, err := time.Parse("2006-01-02", payload.Deadline)
+    if err != nil {
+        c.Json(w, http.StatusBadRequest, "Invalid deadline format", nil)
+        return
+    }
 
-	// Supervisor info from middleware
-	userUUID := r.Context().Value("user_uuid").(string)
-	var supervisor models.User
-	if err := c.DB.Where("user_uuid = ?", userUUID).First(&supervisor).Error; err != nil {
-		http.Error(w, "supervisor not found", http.StatusUnauthorized)
-		return
-	}
+    if payload.Title == "" || deadline.Before(start) {
+        c.Json(w, http.StatusBadRequest, "Invalid title or dates", nil)
+        return
+    }
 
-	window := models.ProposalSubmissionWindow{
-		Title:       payload.Title,
-		StartDate:   start,
-		Deadline:    deadline,
-		CreatedByID: supervisor.UserID,
-	}
+    // ---------------------------
+    // Get supervisor/admin info
+    // ---------------------------
+    userUUIDCtx := r.Context().Value("user_uuid")
+    if userUUIDCtx == nil {
+        c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+        return
+    }
+    userUUID := userUUIDCtx.(string)
 
-	if err := c.DB.Create(&window).Error; err != nil {
-		http.Error(w, "failed to create submission window", http.StatusInternalServerError)
-		return
-	}
+    var user models.User
+    if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+        c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
+        return
+    }
 
-	// Fetch all students
-	var students []models.User
-	if err := c.DB.Where("role_id = ?", 7).Find(&students).Error; err != nil {
-		http.Error(w, "failed to fetch students", http.StatusInternalServerError)
-		return
-	}
+    role := strings.ToLower(user.Role.Name)
+    if role != "supervisor" && role != "admin" {
+        c.Json(w, http.StatusForbidden, "Only supervisors or admins can create submission windows", nil)
+        return
+    }
 
-	// Notify all students
-	for _, student := range students {
-		message := fmt.Sprintf(
-			"Dear %s, a new proposal submission window '%s' is now open.\nSubmit your proposal between %s and %s.",
-			student.Profile.FirstName,
-			window.Title,
-			start.Format("02 Jan 2006"),
-			deadline.Format("02 Jan 2006"),
-		)
-		_ = c.CreateNotification(student.UserID, "Proposal Submission Open", message)
-	}
+    // ---------------------------
+    // Create the window
+    // ---------------------------
+    window := models.ProposalSubmissionWindow{
+        Title:       payload.Title,
+        StartDate:   start,
+        Deadline:    deadline,
+        CreatedByID: user.UserID,
+        School:      payload.School,      // <- must exist in the model
+        Program:     payload.Program,     // <- must exist in the model
+        YearOfStudy: payload.YearOfStudy, // <- must exist in the model
+    }
 
-	// Audit log
-	_ = c.LogAudit(supervisor.UserID, "create_submission_window", nil, nil, nil, nil)
+    if err := c.DB.Create(&window).Error; err != nil {
+        c.Json(w, http.StatusInternalServerError, "Failed to create submission window", map[string]interface{}{"error": err.Error()})
+        return
+    }
 
-	// Respond with string dates
-	resp := map[string]interface{}{
-		"window_id":  window.WindowID,
-		"title":      window.Title,
-		"start_date": start.Format("2006-01-02"),
-		"deadline":   deadline.Format("2006-01-02"),
-		"created_by": supervisor.Profile.FirstName + " " + supervisor.Profile.LastName,
-		"created_at": window.CreatedAt.Format("2006-01-02 15:04:05"),
-		"updated_at": window.UpdatedAt.Format("2006-01-02 15:04:05"),
-	}
+    // ---------------------------
+    // Dynamic student filtering
+    // ---------------------------
+    query := c.DB.Preload("Profile").Joins("JOIN student_profiles sp ON sp.user_id = users.user_id")
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+    if payload.School != nil && *payload.School != "" {
+        query = query.Where("sp.school = ?", *payload.School)
+    }
+    if payload.Program != nil && *payload.Program != "" {
+        query = query.Where("sp.program = ?", *payload.Program)
+    }
+    if payload.YearOfStudy != nil && *payload.YearOfStudy != "" {
+        query = query.Where("sp.year_of_study = ?", *payload.YearOfStudy)
+    }
+
+    query = query.Where("users.deleted_at IS NULL")
+
+    var students []models.User
+    if err := query.Find(&students).Error; err != nil {
+        c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
+        return
+    }
+
+    // ---------------------------
+    // Send notifications
+    // ---------------------------
+    for _, student := range students {
+        message := fmt.Sprintf(
+            "Dear %s, a new proposal submission window '%s' is now open.\nSubmit your proposal between %s and %s.",
+            student.Profile.FirstName,
+            window.Title,
+            start.Format("02 Jan 2006"),
+            deadline.Format("02 Jan 2006"),
+        )
+        _ = c.CreateNotification(student.UserID, "Proposal Submission Open", message)
+    }
+
+    // ---------------------------
+    // Audit log
+    // ---------------------------
+    _ = c.LogAudit(user.UserID, "create_submission_window", nil, &window.WindowID, nil, map[string]interface{}{
+        "title": window.Title,
+    })
+
+    // ---------------------------
+    // Response
+    // ---------------------------
+    resp := map[string]interface{}{
+        "window_id":  window.WindowID,
+        "title":      window.Title,
+        "start_date": window.StartDate.Format("2006-01-02"),
+        "deadline":   window.Deadline.Format("2006-01-02"),
+        "created_by": user.Profile.FirstName + " " + user.Profile.LastName,
+        "created_at": window.CreatedAt.Format("2006-01-02 15:04:05"),
+        "updated_at": window.UpdatedAt.Format("2006-01-02 15:04:05"),
+        "school":     payload.School,
+        "program":    payload.Program,
+        "year_of_study": payload.YearOfStudy,
+        "sent_to":    len(students),
+    }
+
+    c.Json(w, http.StatusCreated, "Submission window created successfully", resp)
 }
 
-//----------------------------GETALL---------------------
-
+//==============================GETALL======================================
 func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request) {
-	var windows []models.ProposalSubmissionWindow
-	if err := c.DB.Preload("CreatedBy.Profile").Order("start_date asc").Find(&windows).Error; err != nil {
-		http.Error(w, "failed to fetch submission windows", http.StatusInternalServerError)
-		return
-	}
+    userUUIDCtx := r.Context().Value("user_uuid")
+    if userUUIDCtx == nil {
+        c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+        return
+    }
+    userUUID := userUUIDCtx.(string)
 
-	resp := make([]map[string]interface{}, 0)
-	for _, wdw := range windows {
-		supervisorName := ""
-		if wdw.CreatedBy.UserID != 0 {
-			supervisorName = wdw.CreatedBy.Profile.FirstName + " " + wdw.CreatedBy.Profile.LastName
-		}
+    var user models.User
+    if err := c.DB.Preload("Role").Preload("Profile").
+        Joins("LEFT JOIN student_profiles sp ON sp.user_id = users.user_id").
+        Where("user_uuid = ?", userUUID).
+        First(&user).Error; err != nil {
+        c.Json(w, http.StatusInternalServerError, "Failed to fetch user", map[string]interface{}{"error": err.Error()})
+        return
+    }
 
-		resp = append(resp, map[string]interface{}{
-			"window_id":  wdw.WindowID,
-			"title":      wdw.Title,
-			"start_date": wdw.StartDate.Format("2006-01-02"),
-			"deadline":   wdw.Deadline.Format("2006-01-02"),
-			"created_by": supervisorName,
-			"created_at": wdw.CreatedAt.Format("2006-01-02 15:04:05"),
-			"updated_at": wdw.UpdatedAt.Format("2006-01-02 15:04:05"),
-		})
-	}
+    role := strings.ToLower(user.Role.Name)
+    var windows []models.ProposalSubmissionWindow
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+    switch role {
+    case "admin":
+        // Admin can see all windows
+        if err := c.DB.Preload("CreatedBy.Profile").Find(&windows).Error; err != nil {
+            c.Json(w, http.StatusInternalServerError, "Failed to fetch windows", map[string]interface{}{"error": err.Error()})
+            return
+        }
+
+    case "supervisor":
+        // Supervisor only sees what they created
+        if err := c.DB.Preload("CreatedBy.Profile").Where("created_by_id = ?", user.UserID).Find(&windows).Error; err != nil {
+            c.Json(w, http.StatusInternalServerError, "Failed to fetch windows", map[string]interface{}{"error": err.Error()})
+            return
+        }
+
+    case "student":
+        // Students see windows relevant to them
+        var studentProfile models.StudentProfile
+        if err := c.DB.Where("user_id = ?", user.UserID).First(&studentProfile).Error; err != nil {
+            c.Json(w, http.StatusInternalServerError, "Failed to fetch student profile", map[string]interface{}{"error": err.Error()})
+            return
+        }
+
+        // Get all windows
+        var allWindows []models.ProposalSubmissionWindow
+        if err := c.DB.Preload("CreatedBy.Profile").Find(&allWindows).Error; err != nil {
+            c.Json(w, http.StatusInternalServerError, "Failed to fetch windows", map[string]interface{}{"error": err.Error()})
+            return
+        }
+
+        // Filter manually — if window has filter values, match against student's profile
+        for _, w := range allWindows {
+            match := true
+
+            if w.School != nil && *w.School != "" && studentProfile.School != *w.School {
+                match = false
+            }
+            if w.Program != nil && *w.Program != "" && studentProfile.Program != *w.Program {
+                match = false
+            }
+            if w.YearOfStudy != nil && *w.YearOfStudy != "" && studentProfile.YearOfStudy != *w.YearOfStudy {
+                match = false
+            }
+
+            if match {
+                windows = append(windows, w)
+            }
+        }
+
+    default:
+        c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
+        return
+    }
+
+    // Format response
+    var resp []map[string]interface{}
+    for _, win := range windows {
+        resp = append(resp, map[string]interface{}{
+            "window_id":  win.WindowID,
+            "title":      win.Title,
+            "start_date": win.StartDate.Format("2006-01-02"),
+            "deadline":   win.Deadline.Format("2006-01-02"),
+            "created_by": win.CreatedBy.Profile.FirstName + " " + win.CreatedBy.Profile.LastName,
+            "created_at": win.CreatedAt.Format("2006-01-02 15:04:05"),
+            "updated_at": win.UpdatedAt.Format("2006-01-02 15:04:05"),
+            "school":     win.School,
+            "program":    win.Program,
+            "year":       win.YearOfStudy,
+        })
+    }
+
+   c.Json(w, http.StatusOK, "Submission windows fetched successfully", map[string]interface{}{
+    "windows": resp,
+})
+
 }

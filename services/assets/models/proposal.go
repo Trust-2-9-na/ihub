@@ -50,6 +50,7 @@ type Proposal struct {
 	Archived       bool                      `gorm:"default:false" json:"archived"`
 	ArchivedAt     *time.Time                `json:"archived_at,omitempty"`
 	ArchivedBy     *uint64                   `json:"archived_by,omitempty"` // FK -> users
+	ArchivedByUser *User    `gorm:"foreignKey:ArchivedBy;references:UserID" json:"archived_by_user"`
 	CreatedAt      time.Time                 `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt      time.Time                 `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt      gorm.DeletedAt            `gorm:"index" json:"-"`
@@ -57,6 +58,8 @@ type Proposal struct {
 	Window         *ProposalSubmissionWindow `gorm:"foreignKey:WindowID;references:WindowID" json:"window,omitempty"`
 	CohortID       *uint64                   `json:"cohort_id,omitempty"` // Nullable at submission
 	Cohort         *Cohort                   `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
+	Category       string                    `gorm:"size:100;index" json:"category"`
+	Subfield       *string                   `gorm:"size:100" json:"subfield,omitempty"`
 }
 
 //

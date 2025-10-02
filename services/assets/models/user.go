@@ -3,6 +3,7 @@ package models
 
 import (
 	"time"
+	"gorm.io/gorm"
 )
 
 type Role struct {
@@ -24,11 +25,13 @@ type User struct {
 	UpdatedAt    time.Time
 	Profile      UserProfile `gorm:"foreignKey:UserID"`                   // one-to-one link
 	Role         Role        `gorm:"foreignKey:RoleID;references:RoleID"` // links User.RoleID -> Role.RoleID
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
 	// belongs to Role
 
-	StudentProfile    *StudentProfile    `gorm:"foreignKey:UserID"`
-	MentorProfile     *MentorProfile     `gorm:"foreignKey:UserID"`
-	SupervisorProfile *SupervisorProfile `gorm:"foreignKey:UserID"`
+	StudentProfile    *StudentProfile    `gorm:"foreignKey:UserID;references:UserID"`
+	MentorProfile     *MentorProfile     `gorm:"foreignKey:UserID;references:UserID"`
+	SupervisorProfile *SupervisorProfile `gorm:"foreignKey:UserID;references:UserID"`
 	Teams             []Team             `gorm:"many2many:user_teams;"`
 }
 

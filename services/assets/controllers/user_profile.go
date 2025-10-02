@@ -22,7 +22,8 @@ type UpdateProfileInput struct {
 	YearsExp     *int    `json:"years_exp,omitempty"`     // For mentors/supervisors
 }
 
-// GetProfile handles GET /api/profile/{user_id}
+//===== GetProfile handles GET /api/profile/{user_id}=====================
+
 func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// Get authenticated user UUID from context (set by JWT middleware)
 	userUUIDCtx := r.Context().Value("user_uuid")
@@ -34,84 +35,60 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch user with related profiles
 	var user models.User
-	if err := c.DB.Preload("Profile").
+	err := c.DB.
+		Preload("Profile").
 		Preload("StudentProfile").
 		Preload("MentorProfile").
 		Preload("SupervisorProfile").
-		Where("user_uuid = ?", userUUID).
-		First(&user).Error; err != nil {
+		First(&user, "user_uuid = ?", userUUID).Error
+	if err != nil {
 		c.Json(w, http.StatusNotFound, "User not found", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Build response depending on role
-	var resp map[string]interface{}
-	switch user.RoleID {
-	case 7: // Student
-		resp = map[string]interface{}{
-			"user_id":    user.UserID,
-			"username":   user.Username,
-			"email":      user.Email,
-			"first_name": user.Profile.FirstName,
-			"last_name":  user.Profile.LastName,
-			"phone":      user.Profile.Phone,
-			"address":    user.Profile.Address,
-			"bio":        user.Profile.Bio,
-			"student": map[string]interface{}{
-				"school":        user.StudentProfile.School,
-				"program":       user.StudentProfile.Program,
-				"year_of_study": user.StudentProfile.YearOfStudy,
-			},
-		}
-	case 8: // Mentor
-		resp = map[string]interface{}{
-			"user_id":    user.UserID,
-			"username":   user.Username,
-			"email":      user.Email,
-			"first_name": user.Profile.FirstName,
-			"last_name":  user.Profile.LastName,
-			"phone":      user.Profile.Phone,
-			"address":    user.Profile.Address,
-			"bio":        user.Profile.Bio,
-			"mentor": map[string]interface{}{
-				"department":   user.MentorProfile.Department,
-				"organization": user.MentorProfile.Organization,
-				"expertise":    user.MentorProfile.Expertise,
-				"years_exp":    user.MentorProfile.YearsExp,
-			},
-		}
-	case 9: // Supervisor
-		resp = map[string]interface{}{
-			"user_id":    user.UserID,
-			"username":   user.Username,
-			"email":      user.Email,
-			"first_name": user.Profile.FirstName,
-			"last_name":  user.Profile.LastName,
-			"phone":      user.Profile.Phone,
-			"address":    user.Profile.Address,
-			"bio":        user.Profile.Bio,
-			"supervisor": map[string]interface{}{
-				"department":   user.SupervisorProfile.Department,
-				"organization": user.SupervisorProfile.Organization,
-				"expertise":    user.SupervisorProfile.Expertise,
-				"years_exp":    user.SupervisorProfile.YearsExp,
-			},
-		}
-	default: // Admin or other roles
-		resp = map[string]interface{}{
-			"user_id":    user.UserID,
-			"username":   user.Username,
-			"email":      user.Email,
-			"first_name": user.Profile.FirstName,
-			"last_name":  user.Profile.LastName,
-			"phone":      user.Profile.Phone,
-			"address":    user.Profile.Address,
-			"bio":        user.Profile.Bio,
+	// Base response (common to all users)
+	resp := map[string]interface{}{
+		"user_id":    user.UserID,
+		"username":   user.Username,
+		"email":      user.Email,
+		"first_name": user.Profile.FirstName,
+		"last_name":  user.Profile.LastName,
+		"phone":      user.Profile.Phone,
+		"address":    user.Profile.Address,
+		"bio":        user.Profile.Bio,
+	}
+
+	// Add role-specific profile if available
+	if user.StudentProfile != nil {
+		resp["student"] = map[string]interface{}{
+			"school":        user.StudentProfile.School,
+			"program":       user.StudentProfile.Program,
+			"year_of_study": user.StudentProfile.YearOfStudy,
 		}
 	}
 
+	if user.MentorProfile != nil {
+		resp["mentor"] = map[string]interface{}{
+			"department":   user.MentorProfile.Department,
+			"organization": user.MentorProfile.Organization,
+			"expertise":    user.MentorProfile.Expertise,
+			"years_exp":    user.MentorProfile.YearsExp,
+		}
+	}
+
+	if user.SupervisorProfile != nil {
+		resp["supervisor"] = map[string]interface{}{
+			"department":   user.SupervisorProfile.Department,
+			"organization": user.SupervisorProfile.Organization,
+			"expertise":    user.SupervisorProfile.Expertise,
+			"years_exp":    user.SupervisorProfile.YearsExp,
+		}
+	}
+
+	// Return JSON response
 	c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
 }
+
 
 // UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
