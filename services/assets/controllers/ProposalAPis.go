@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 	"web/services/assets/models"
-	"strings"
 
 	"github.com/gorilla/mux"
 	"gorm.io/gorm"
@@ -18,14 +18,14 @@ type ProposalSummary struct {
 	Title       string   `json:"title"`
 	Abstract    string   `json:"abstract"`
 	DocumentURL string   `json:"document_url"`
-	Category string      `json:"category"`
+	Category    string   `json:"category"`
 	Status      string   `json:"status"`
 	SubmittedBy string   `json:"submitted_by"`
 	WindowTitle string   `json:"window_title"`
 	TeamName    string   `json:"team_name,omitempty"`
 	TeamMembers []string `json:"team_members,omitempty"`
 	CreatedAt   string   `json:"created_at"`
-	Subfield     *string  `json:"subfield,omitempty"`
+	Subfield    *string  `json:"subfield,omitempty"`
 }
 
 // ─── CREATE PROPOSAL ───────────────────────────────────────────
@@ -36,8 +36,8 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		Title    string  `json:"title"`
 		Abstract string  `json:"abstract"`
 		Document *string `json:"document_url"`
-		Category string `json:"category"`
-		Subfield  *string `json:"subfield,omitempty"`
+		Category string  `json:"category"`
+		Subfield *string `json:"subfield,omitempty"`
 		TeamID   *uint64 `json:"team_id"`
 		WindowID uint64  `json:"window_id"`
 		Submit   bool    `json:"submit"` // true if user wants to submit now
@@ -97,8 +97,8 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		Title:          payload.Title,
 		Abstract:       payload.Abstract,
 		DocumentURL:    payload.Document,
-		Category: payload.Category,
-		Subfield: payload.Subfield,
+		Category:       payload.Category,
+		Subfield:       payload.Subfield,
 		SubmittedByID:  user.UserID,
 		TeamID:         payload.TeamID,
 		WindowID:       payload.WindowID,
@@ -152,7 +152,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		Abstract *string `json:"abstract"`
 		Document *string `json:"document_url"`
 		Category *string `json:"category"`
-		Subfield *string `json:"json:"subfield""`
+		Subfield *string `json:"subfield"`
 		WindowID *uint64 `json:"window_id"`
 		TeamID   *uint64 `json:"team_id"`
 		Submit   *bool   `json:"submit"` // optional submit flag
@@ -197,11 +197,11 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	if payload.Document != nil {
 		proposal.DocumentURL = payload.Document
 	}
-	if payload.Category!= nil {
+	if payload.Category != nil {
 		proposal.Category = *payload.Category
 	}
-	if payload.Subfield!= nil {
-		proposal.Subfield= payload.Subfield
+	if payload.Subfield != nil {
+		proposal.Subfield = payload.Subfield
 	}
 	if payload.WindowID != nil {
 		var window models.ProposalSubmissionWindow
@@ -252,7 +252,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		Title          string     `json:"title"`
 		Abstract       string     `json:"abstract"`
 		DocumentURL    string     `json:"document_url"`
-		Category   string `json:"category"`
+		Category       string     `json:"category"`
 		Subfield       *string    `json:"subfield,omitempty"`
 		Status         string     `json:"status"`
 		SubmissionDate *time.Time `json:"submission_date,omitempty"`
@@ -349,8 +349,8 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 		Title       string       `json:"title"`
 		Abstract    string       `json:"abstract"`
 		DocumentURL *string      `json:"document_url,omitempty"`
-		Subfield       *string    `json:"subfield,omitempty"`
-		Category  string `json:"category"`
+		Subfield    *string      `json:"subfield,omitempty"`
+		Category    string       `json:"category"`
 		Status      string       `json:"status"`
 		Window      windowResp   `json:"window"`
 		Team        *teamResp    `json:"team,omitempty"`
@@ -393,8 +393,8 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 			Title:       p.Title,
 			Abstract:    p.Abstract,
 			DocumentURL: p.DocumentURL,
-			Subfield: p.Subfield,
-			Category: p.Category,
+			Subfield:    p.Subfield,
+			Category:    p.Category,
 			Status:      p.Status,
 			Window: windowResp{
 				Title:    p.Window.Title,
@@ -510,15 +510,25 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 			"proposal_id":  p.ProposalID,
 			"title":        p.Title,
 			"abstract":     p.Abstract,
-			"category": p.Category,
-			"subfield": p.Subfield,
+			"category":     p.Category,
+			"subfield":     p.Subfield,
 			"status":       p.Status,
 			"archived":     p.Archived,
 			"archived_at":  p.ArchivedAt,
 			"archived_by":  archivedByName,
 			"submitted_by": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName,
-			"cohort":       func() string { if p.Cohort != nil { return p.Cohort.Name }; return "" }(),
-			"window_title": func() string { if p.Window != nil { return p.Window.Title }; return "" }(),
+			"cohort": func() string {
+				if p.Cohort != nil {
+					return p.Cohort.Name
+				}
+				return ""
+			}(),
+			"window_title": func() string {
+				if p.Window != nil {
+					return p.Window.Title
+				}
+				return ""
+			}(),
 			"document_url": p.DocumentURL,
 			"created_at":   p.CreatedAt,
 			"updated_at":   p.UpdatedAt,
@@ -531,92 +541,102 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 	)
 }
 
-//=============GET ARCHIVED PROPOSALS ===========================
+// =============GET ARCHIVED PROPOSALS ===========================================
 func (c *Construct) GetArchivedProposals(w http.ResponseWriter, r *http.Request) {
-    // Get current user
-    userUUIDCtx := r.Context().Value("user_uuid")
-    if userUUIDCtx == nil {
-        c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
-        return
-    }
-    userUUID := userUUIDCtx.(string)
+	userUUIDCtx := r.Context().Value("user_uuid")
+	if userUUIDCtx == nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	userUUID := userUUIDCtx.(string)
 
-    var user models.User
-    if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-        c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
-        return
-    }
+	var user models.User
+	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-    var proposals []models.Proposal
+	query := c.DB.
+		Preload("SubmittedBy.Profile").
+		Preload("ArchivedByUser.Profile").
+		Preload("Cohort").
+		Preload("Window").
+		Where("archived = ?", true)
 
-    // Build base query for archived proposals
-    query := c.DB.
-        Preload("SubmittedBy.Profile").
-        Preload("ArchivedByUser.Profile").
-        Preload("Cohort").
-        Preload("Window").
-        Where("archived = ?", true)
+	if strings.ToLower(user.Role.Name) == "student" {
+		query = query.Where("archived_by = ?", user.UserID)
+	}
 
-    // Restrict access for non-supervisors/admins
-    role := strings.ToLower(user.Role.Name)
-    if role != "supervisor" && role != "admin" {
-        query = query.Where("submitted_by_id = ?", user.UserID)
-    }
+	var proposals []models.Proposal
+	if err := query.Find(&proposals).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch archived proposals", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-    if err := query.Find(&proposals).Error; err != nil {
-        c.Json(w, http.StatusInternalServerError, "Failed to fetch archived proposals", map[string]interface{}{"error": err.Error()})
-        return
-    }
+	resp := make([]map[string]interface{}, 0)
+	for _, p := range proposals {
+		archivedByName := ""
+		if p.ArchivedByUser != nil {
+			archivedByName = safeFullName(p.ArchivedByUser)
+		}
 
-    // Build response
-    resp := make([]map[string]interface{}, 0)
-    for _, p := range proposals {
-        archivedByName := ""
-        if p.ArchivedByUser != nil {
-            if p.ArchivedByUser.Profile.FirstName != "" {
-                archivedByName = p.ArchivedByUser.Profile.FirstName
-                if p.ArchivedByUser.Profile.LastName != "" {
-                    archivedByName += " " + p.ArchivedByUser.Profile.LastName
-                }
-            } else {
-                archivedByName = p.ArchivedByUser.Username // fallback
-            }
-        }
+		submittedByName := ""
+		if p.SubmittedBy.UserID != 0 {
+			submittedByName = safeFullName(&p.SubmittedBy)
+		}
 
-        submittedByName := ""
-        if p.SubmittedBy.Profile.FirstName != "" {
-            submittedByName = p.SubmittedBy.Profile.FirstName
-            if p.SubmittedBy.Profile.LastName != "" {
-                submittedByName += " " + p.SubmittedBy.Profile.LastName
-            }
-        }
+		resp = append(resp, map[string]interface{}{
+			"proposal_id":  p.ProposalID,
+			"title":        p.Title,
+			"abstract":     p.Abstract,
+			"category":     p.Category,
+			"subfield":     ifNotNil(p.Subfield),
+			"status":       p.Status,
+			"archived":     p.Archived,
+			"archived_at":  p.ArchivedAt,
+			"archived_by":  archivedByName,
+			"submitted_by": submittedByName,
+			"cohort":       ifNotNilStr(p.Cohort, func(c *models.Cohort) string { return c.Name }),
+			"window_title": ifNotNilStr(p.Window, func(w *models.ProposalSubmissionWindow) string { return w.Title }),
+			"document_url": ifNotNil(p.DocumentURL),
+			"created_at":   p.CreatedAt,
+			"updated_at":   p.UpdatedAt,
+		})
+	}
 
-        resp = append(resp, map[string]interface{}{
-            "proposal_id":  p.ProposalID,
-            "title":        p.Title,
-            "abstract":     p.Abstract,
-			"category": p.Category,
-			"subfield": p.Subfield,
-            "status":       p.Status,
-            "archived":     p.Archived,
-            "archived_at":  p.ArchivedAt,
-            "archived_by":  archivedByName,
-            "submitted_by": submittedByName,
-            "cohort":       func() string { if p.Cohort != nil { return p.Cohort.Name }; return "" }(),
-            "window_title": func() string { if p.Window != nil { return p.Window.Title }; return "" }(),
-            "document_url": p.DocumentURL,
-            "created_at":   p.CreatedAt,
-            "updated_at":   p.UpdatedAt,
-        })
-    }
-
-    c.Json(w, http.StatusOK, fmt.Sprintf("%d archived proposal(s) fetched", len(resp)), map[string]interface{}{"proposals": resp})
+	c.Json(w, http.StatusOK, fmt.Sprintf("%d archived proposal(s) fetched", len(resp)), map[string]interface{}{"proposals": resp})
 }
 
+func safeFullName(u *models.User) string {
+	if u.Profile.FirstName != "" {
+		name := u.Profile.FirstName
+		if u.Profile.LastName != "" {
+			name += " " + u.Profile.LastName
+		}
+		return name
+	}
+	return u.Username
+}
+
+func ifNotNil(val *string) string {
+	if val != nil {
+		return *val
+	}
+	return ""
+}
+
+func ifNotNilStr[T any](val *T, f func(*T) string) string {
+	if val != nil {
+		return f(val)
+	}
+	return ""
+}
 
 // ─── GET PROPOSALS WITH PAGINATION ─────────────────────────────
 func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
+	// Default pagination values
 	page, limit := 1, 10
+
 	if p := r.URL.Query().Get("page"); p != "" {
 		if pp, err := strconv.Atoi(p); err == nil && pp > 0 {
 			page = pp
@@ -629,12 +649,17 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	offset := (page - 1) * limit
+
+	// Count total proposals
 	var total int64
-	if err := c.DB.Model(&models.Proposal{}).Where("archived = ?", false).Count(&total).Error; err != nil {
+	if err := c.DB.Model(&models.Proposal{}).
+		Where("archived = ?", false).
+		Count(&total).Error; err != nil {
 		http.Error(w, "failed to count proposals", http.StatusInternalServerError)
 		return
 	}
 
+	// Fetch proposals with relations
 	var proposals []models.Proposal
 	if err := c.DB.Preload("SubmittedBy.Profile").
 		Preload("Team.Users.Profile").
@@ -646,13 +671,14 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// DTO
 	type ProposalSummary struct {
 		ProposalID  uint64   `json:"proposal_id"`
 		Title       string   `json:"title"`
 		Abstract    string   `json:"abstract"`
-		DocumentURL string   `json:"document_url"`
-		Category string  `json:"category"`
-		Subfield       string    `json:"subfield,omitempty"`
+		DocumentURL string   `json:"document_url,omitempty"`
+		Category    string   `json:"category"`
+		Subfield    string   `json:"subfield,omitempty"`
 		Status      string   `json:"status"`
 		SubmittedBy string   `json:"submitted_by"`
 		WindowTitle string   `json:"window_title"`
@@ -662,35 +688,50 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var resp []ProposalSummary
+
 	for _, p := range proposals {
+		// Handle SubmittedBy
 		submittedBy := ""
 		if p.SubmittedBy.UserID != 0 {
 			submittedBy = p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName
 		}
 
+		// Handle Window
 		windowTitle := ""
 		if p.Window.WindowID != 0 {
 			windowTitle = p.Window.Title
 		}
 
+		// Handle Team & Members
 		teamName := ""
 		var teamMembers []string
 		if p.Team != nil && p.Team.TeamID != 0 {
 			teamName = p.Team.Name
 			for _, member := range p.Team.Users {
-				if member.Profile.FirstName != "" && member.Profile.LastName != "" {
-					teamMembers = append(teamMembers, member.Profile.FirstName+" "+member.Profile.LastName)
+				fullName := strings.TrimSpace(member.Profile.FirstName + " " + member.Profile.LastName)
+				if fullName != "" {
+					teamMembers = append(teamMembers, fullName)
 				}
 			}
+		}
+
+		// Safe nil handling
+		documentURL := ""
+		if p.DocumentURL != nil {
+			documentURL = *p.DocumentURL
+		}
+		subfield := ""
+		if p.Subfield != nil {
+			subfield = *p.Subfield
 		}
 
 		resp = append(resp, ProposalSummary{
 			ProposalID:  p.ProposalID,
 			Title:       p.Title,
 			Abstract:    p.Abstract,
-			DocumentURL: *p.DocumentURL,
-			Subfield:  *p.Subfield,
-			Category: p.Category,
+			DocumentURL: documentURL,
+			Subfield:    subfield,
+			Category:    p.Category,
 			Status:      p.Status,
 			SubmittedBy: submittedBy,
 			WindowTitle: windowTitle,
@@ -700,6 +741,8 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Response
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"page":      page,
 		"limit":     limit,
@@ -763,4 +806,3 @@ func (c *Construct) DeleteProposal(w http.ResponseWriter, r *http.Request) {
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("%d proposal(s) deleted successfully", result.RowsAffected), nil)
 }
-

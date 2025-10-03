@@ -2,11 +2,11 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
-	"web/services/assets/models"
-	"fmt"
 	"strings"
+	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
 )
@@ -91,8 +91,6 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 
 	c.Json(w, http.StatusCreated, "Cohort created successfully", map[string]interface{}{"cohort": resp})
 }
-
-
 
 //------------------------------------------------
 // ** all users View-list Cohort API **
@@ -191,8 +189,8 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp = append(resp, map[string]interface{}{
-			"cohort_id": cohort.CohortID,
-			"name":      cohort.Name,
+			"cohort_id":   cohort.CohortID,
+			"name":        cohort.Name,
 			"description": cohort.Description,
 			"created_by": map[string]string{
 				"first_name": creator.Profile.FirstName,
@@ -216,7 +214,6 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("%d cohort(s) deleted successfully", len(cohorts)), map[string]interface{}{"cohorts": resp})
 }
-
 
 //--------------------------------------------
 //  Update Cohort API **
@@ -319,142 +316,146 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	c.Json(w, http.StatusOK, "Cohort updated successfully", map[string]interface{}{"cohort": resp})
 }
 
-
 // GetCohortOverview fetches proposals, students, and teams for a single cohort
 func (c *Construct) GetCohortOverview(w http.ResponseWriter, r *http.Request) {
-    vars := mux.Vars(r)
-    cohortIDStr := vars["cohort_id"]
-    cohortID, err := strconv.ParseUint(cohortIDStr, 10, 64)
-    if err != nil {
-        c.Json(w, http.StatusBadRequest, "Invalid cohort ID", nil)
-        return
-    }
+	vars := mux.Vars(r)
+	cohortIDStr := vars["cohort_id"]
+	cohortID, err := strconv.ParseUint(cohortIDStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid cohort ID", nil)
+		return
+	}
 
-    // Get logged-in user UUID
-    userUUIDCtx := r.Context().Value("user_uuid")
-    if userUUIDCtx == nil {
-        c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
-        return
-    }
-    userUUID := userUUIDCtx.(string)
+	// Get logged-in user UUID
+	userUUIDCtx := r.Context().Value("user_uuid")
+	if userUUIDCtx == nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	userUUID := userUUIDCtx.(string)
 
-    // Fetch user and role
-    var user models.User
-    if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-        c.Json(w, http.StatusInternalServerError, "Failed to fetch user", map[string]interface{}{"error": err.Error()})
-        return
-    }
+	// Fetch user and role
+	var user models.User
+	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch user", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-    roleName := strings.ToLower(user.Role.Name)
-    if roleName != "supervisor" && roleName != "admin" {
-        c.Json(w, http.StatusForbidden, "Unauthorized", nil)
-        return
-    }
+	roleName := strings.ToLower(user.Role.Name)
+	if roleName != "supervisor" && roleName != "admin" {
+		c.Json(w, http.StatusForbidden, "Unauthorized", nil)
+		return
+	}
 
-    // --- Fetch cohort info ---
-    var cohort models.Cohort
-    if err := c.DB.Preload("Creator.Profile").First(&cohort, cohortID).Error; err != nil {
-        c.Json(w, http.StatusNotFound, "Cohort not found", nil)
-        return
-    }
+	// --- Fetch cohort info ---
+	var cohort models.Cohort
+	if err := c.DB.Preload("Creator.Profile").First(&cohort, cohortID).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
+		return
+	}
 
-    // --- Fetch proposals ---
-    var proposals []models.Proposal
-    if err := c.DB.Preload("SubmittedBy.Profile").
-        Preload("Team.Users.Profile").
-        Preload("Window").
-        Where("cohort_id = ?", cohortID).
-        Find(&proposals).Error; err != nil {
-        c.Json(w, http.StatusInternalServerError, "Failed to fetch proposals", map[string]interface{}{"error": err.Error()})
-        return
-    }
+	// --- Fetch proposals ---
+	var proposals []models.Proposal
+	if err := c.DB.Preload("SubmittedBy.Profile").
+		Preload("Team.Users.Profile").
+		Preload("Window").
+		Where("cohort_id = ?", cohortID).
+		Find(&proposals).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch proposals", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-    proposalsResp := []map[string]interface{}{}
-    for _, p := range proposals {
-        submittedBy := map[string]string{"full_name": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName}
-        teamUsers := []map[string]string{}
-        if p.Team != nil {
-            for _, u := range p.Team.Users {
-                teamUsers = append(teamUsers, map[string]string{
-                    "full_name": u.Profile.FirstName + " " + u.Profile.LastName,
-                    "username":  u.Username,
-                })
-            }
-        }
-        proposalsResp = append(proposalsResp, map[string]interface{}{
-            "proposal_id":  p.ProposalID,
-            "title":        p.Title,
-            "abstract":     p.Abstract,
-            "status":       p.Status,
-            "archived":     p.Archived,
-            "submitted_by": submittedBy,
-            "team":         teamUsers,
-            "window_title": func() string { if p.Window != nil { return p.Window.Title }; return "" }(),
-            "document_url": p.DocumentURL,
-            "created_at":   p.CreatedAt,
-            "updated_at":   p.UpdatedAt,
-        })
-    }
+	proposalsResp := []map[string]interface{}{}
+	for _, p := range proposals {
+		submittedBy := map[string]string{"full_name": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName}
+		teamUsers := []map[string]string{}
+		if p.Team != nil {
+			for _, u := range p.Team.Users {
+				teamUsers = append(teamUsers, map[string]string{
+					"full_name": u.Profile.FirstName + " " + u.Profile.LastName,
+					"username":  u.Username,
+				})
+			}
+		}
+		proposalsResp = append(proposalsResp, map[string]interface{}{
+			"proposal_id":  p.ProposalID,
+			"title":        p.Title,
+			"abstract":     p.Abstract,
+			"status":       p.Status,
+			"archived":     p.Archived,
+			"submitted_by": submittedBy,
+			"team":         teamUsers,
+			"window_title": func() string {
+				if p.Window != nil {
+					return p.Window.Title
+				}
+				return ""
+			}(),
+			"document_url": p.DocumentURL,
+			"created_at":   p.CreatedAt,
+			"updated_at":   p.UpdatedAt,
+		})
+	}
 
-    // --- Fetch students in cohort ---
-    var students []models.User
-    if err := c.DB.Preload("Profile").Where("cohort_id = ? AND role_id = ?", cohortID, 2).Find(&students).Error; err != nil { // 2 = student role
-        c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
-        return
-    }
-    studentsResp := []map[string]interface{}{}
-    for _, s := range students {
-        studentsResp = append(studentsResp, map[string]interface{}{
-            "user_id":   s.UserID,
-            "username":  s.Username,
-            "full_name": s.Profile.FirstName + " " + s.Profile.LastName,
-            "email":     s.Email,
-        })
-    }
+	// --- Fetch students in cohort ---
+	var students []models.User
+	if err := c.DB.Preload("Profile").Where("cohort_id = ? AND role_id = ?", cohortID, 2).Find(&students).Error; err != nil { // 2 = student role
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	studentsResp := []map[string]interface{}{}
+	for _, s := range students {
+		studentsResp = append(studentsResp, map[string]interface{}{
+			"user_id":   s.UserID,
+			"username":  s.Username,
+			"full_name": s.Profile.FirstName + " " + s.Profile.LastName,
+			"email":     s.Email,
+		})
+	}
 
-    // --- Fetch teams in cohort ---
-    var teams []models.Team
-    if err := c.DB.Preload("Users.Profile").Where("cohort_id = ?", cohortID).Find(&teams).Error; err != nil {
-        c.Json(w, http.StatusInternalServerError, "Failed to fetch teams", map[string]interface{}{"error": err.Error()})
-        return
-    }
-    teamsResp := []map[string]interface{}{}
-    for _, t := range teams {
-        usersResp := []map[string]string{}
-        for _, u := range t.Users {
-            usersResp = append(usersResp, map[string]string{
-                "full_name": u.Profile.FirstName + " " + u.Profile.LastName,
-                "username":  u.Username,
-            })
-        }
-        teamsResp = append(teamsResp, map[string]interface{}{
-            "team_id": t.TeamID,
-            "name":    t.Name,
-            "users":   usersResp,
-        })
-    }
+	// --- Fetch teams in cohort ---
+	var teams []models.Team
+	if err := c.DB.Preload("Users.Profile").Where("cohort_id = ?", cohortID).Find(&teams).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch teams", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	teamsResp := []map[string]interface{}{}
+	for _, t := range teams {
+		usersResp := []map[string]string{}
+		for _, u := range t.Users {
+			usersResp = append(usersResp, map[string]string{
+				"full_name": u.Profile.FirstName + " " + u.Profile.LastName,
+				"username":  u.Username,
+			})
+		}
+		teamsResp = append(teamsResp, map[string]interface{}{
+			"team_id": t.TeamID,
+			"name":    t.Name,
+			"users":   usersResp,
+		})
+	}
 
-    // --- Build final response ---
-    resp := map[string]interface{}{
-        "cohort": map[string]interface{}{
-            "cohort_id":   cohort.CohortID,
-            "name":        cohort.Name,
-            "description": cohort.Description,
-            "start_date":  cohort.StartDate,
-            "end_date":    cohort.EndDate,
-            "created_by": map[string]string{
-                "full_name": cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName,
-            },
-        },
-        "counts": map[string]int{
-            "proposals": len(proposalsResp),
-            "students":  len(studentsResp),
-            "teams":     len(teamsResp),
-        },
-        "proposals": proposalsResp,
-        "students":  studentsResp,
-        "teams":     teamsResp,
-    }
+	// --- Build final response ---
+	resp := map[string]interface{}{
+		"cohort": map[string]interface{}{
+			"cohort_id":   cohort.CohortID,
+			"name":        cohort.Name,
+			"description": cohort.Description,
+			"start_date":  cohort.StartDate,
+			"end_date":    cohort.EndDate,
+			"created_by": map[string]string{
+				"full_name": cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName,
+			},
+		},
+		"counts": map[string]int{
+			"proposals": len(proposalsResp),
+			"students":  len(studentsResp),
+			"teams":     len(teamsResp),
+		},
+		"proposals": proposalsResp,
+		"students":  studentsResp,
+		"teams":     teamsResp,
+	}
 
-    c.Json(w, http.StatusOK, fmt.Sprintf("Cohort overview fetched successfully"), resp)
+	c.Json(w, http.StatusOK, "Cohort overview fetched successfully", resp)
 }
