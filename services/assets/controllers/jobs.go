@@ -71,3 +71,5 @@ func (c *Construct) CreateNotification(userID uint64, title, message string) err
 	}
 	return c.DB.Create(&notification).Error
 }
+
+//==================Helper Function for History Tracking Model=========
