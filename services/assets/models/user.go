@@ -3,6 +3,7 @@ package models
 
 import (
 	"time"
+
 	"gorm.io/gorm"
 )
 
@@ -23,9 +24,9 @@ type User struct {
 	IsActive     bool    `json:"is_active" gorm:"default:true"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
-	Profile      UserProfile `gorm:"foreignKey:UserID"`                   // one-to-one link
-	Role         Role        `gorm:"foreignKey:RoleID;references:RoleID"` // links User.RoleID -> Role.RoleID
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	Profile      UserProfile    `gorm:"foreignKey:UserID; references:UserID"`                                              // one-to-one link
+	Role         Role           `gorm:"foreignKey:RoleID;references:RoleID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"` // links User.RoleID -> Role.RoleID
+	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// belongs to Role
 

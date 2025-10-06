@@ -72,7 +72,7 @@ type ProposalReview struct {
 	ProposalID   uint64         `gorm:"not null;index" json:"proposal_id"`
 	Proposal     Proposal       `gorm:"foreignKey:ProposalID;references:ProposalID" json:"proposal,omitempty"`
 	ReviewedByID uint64         `gorm:"not null;index" json:"reviewed_by"`
-	ReviewedBy   User           `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by_user"`
+	ReviewedBy   *User          `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by_user"`
 	Comments     *string        `gorm:"type:text" json:"comments,omitempty"`
 	Decision     string         `gorm:"type:varchar(20);default:'Pending';index" json:"decision"`
 	ReviewDate   time.Time      `gorm:"autoCreateTime" json:"review_date"`

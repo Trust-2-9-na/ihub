@@ -114,6 +114,11 @@ CREATE TABLE IF NOT EXISTS user_teams (
 		log.Printf("Migration failed for Notifications: %v", err)
 		return err
 	}
+	// 13 tracking hiatory
+	if err := db.AutoMigrate(&models.SystemHistory{}); err != nil {
+		log.Printf("Migration failed for system tracking history: %v", err)
+		return err
+	}
 
 	log.Println("All migrations ran successfully!")
 

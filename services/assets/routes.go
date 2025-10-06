@@ -59,8 +59,11 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/proposals", c.GetProposals).Methods("GET")                  // list all proposals
 	admin.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // view single proposal
 	admin.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
+	admin.HandleFunc("/proposals/approved", c.GetApprovedProposals).Methods("GET")
+	admin.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
 	admin.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
 	admin.HandleFunc("/proposals/archived", c.GetArchivedProposals).Methods("GET")
+	admin.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -85,6 +88,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // get single proposal
 	supervisor.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
 	supervisor.HandleFunc("/proposals/archived", c.GetArchivedProposals).Methods("GET")
+	supervisor.HandleFunc("/proposals/approved", c.GetApprovedProposals).Methods("GET")
+	supervisor.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
 	supervisor.HandleFunc("/reviews", c.GetReviews).Methods("GET")
 	supervisor.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list all reviews
 	supervisor.HandleFunc("/reviews", c.AddReview).Methods("POST")
@@ -92,6 +97,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
 	supervisor.HandleFunc("/submission-windows", c.CreateSubmissionWindow).Methods("POST")
 	supervisor.HandleFunc("/submission-windows", c.GetSubmissionWindows).Methods("GET")
+	supervisor.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
 
 	// -----------------------------
 	// MENTOR ROUTES
@@ -134,5 +140,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.HandleFunc("/reviews", c.GetReviews).Methods("GET")
 	student.HandleFunc("/submission-windows", c.GetSubmissionWindows).Methods("GET")
 	student.HandleFunc("/proposals", c.DeleteProposal).Methods("DELETE")
+	student.HandleFunc("/proposals/approved", c.GetApprovedProposals).Methods("GET")
+	student.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
 	student.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
+	student.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
+
 }

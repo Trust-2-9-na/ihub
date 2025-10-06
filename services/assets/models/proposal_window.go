@@ -8,10 +8,10 @@ type ProposalSubmissionWindow struct {
 	StartDate   time.Time `json:"start_date"`
 	Deadline    time.Time `json:"deadline"`
 	CreatedByID uint64    `json:"created_by"` // FK
-	CreatedBy   User      `gorm:"foreignKey:CreatedByID" json:"created_by_user"`
+	CreatedBy   User      `gorm:"foreignKey:CreatedByID; references:UserID" json:"created_by_user"`
 	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 	School      *string   `json:"school,omitempty" gorm:"size:255"`
-    Program     *string   `json:"program,omitempty" gorm:"size:255"`
-    YearOfStudy *string   `json:"year_of_study,omitempty" gorm:"size:50"`
+	Program     *string   `json:"program,omitempty" gorm:"size:255"`
+	YearOfStudy *string   `json:"year_of_study,omitempty" gorm:"size:50"`
 }

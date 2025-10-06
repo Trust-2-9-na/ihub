@@ -11,6 +11,8 @@ import (
 	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 type ProposalSummary struct {
@@ -29,60 +31,54 @@ type ProposalSummary struct {
 }
 
 // ─── CREATE PROPOSAL ───────────────────────────────────────────
-
 func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
-	// Parse incoming JSON payload
 	var payload struct {
 		Title    string  `json:"title"`
 		Abstract string  `json:"abstract"`
-		Document *string `json:"document_url"` // uploaded file URL
+		Document *string `json:"document_url"`
 		Category string  `json:"category"`
 		Subfield *string `json:"subfield,omitempty"`
 		TeamID   *uint64 `json:"team_id"`
 		WindowID uint64  `json:"window_id"`
-		Submit   bool    `json:"submit"` // true if user wants to submit now
+		Submit   bool    `json:"submit"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
 
 	if payload.Title == "" || payload.Abstract == "" {
-		http.Error(w, "Title and abstract are required", http.StatusBadRequest)
+		http.Error(w, "title and abstract required", http.StatusBadRequest)
 		return
 	}
 
-	// Get current user
 	userUUID, ok := r.Context().Value("user_uuid").(string)
 	if !ok || userUUID == "" {
-		http.Error(w, "Unauthorized: missing user UUID", http.StatusUnauthorized)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var user models.User
-	if err := c.DB.Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		http.Error(w, "User not found", http.StatusUnauthorized)
+	if err := c.DB.Preload("Profile").First(&user, "user_uuid = ?", userUUID).Error; err != nil {
+		http.Error(w, "user not found", http.StatusUnauthorized)
 		return
 	}
 
-	// Verify submission window exists
 	var window models.ProposalSubmissionWindow
 	if err := c.DB.First(&window, "window_id = ?", payload.WindowID).Error; err != nil {
-		http.Error(w, "Submission window not found", http.StatusBadRequest)
+		http.Error(w, "submission window not found", http.StatusBadRequest)
 		return
 	}
 
-	// Verify team if provided
 	if payload.TeamID != nil {
 		var team models.Team
 		if err := c.DB.First(&team, "team_id = ?", *payload.TeamID).Error; err != nil {
-			http.Error(w, "Team not found", http.StatusBadRequest)
+			http.Error(w, "team not found", http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Set status
 	status := models.ProposalStatusDraft
 	var submissionDate *time.Time
 	if payload.Submit {
@@ -105,24 +101,42 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := c.DB.Create(&proposal).Error; err != nil {
-		http.Error(w, "Failed to create proposal", http.StatusInternalServerError)
+		http.Error(w, "failed to create proposal", http.StatusInternalServerError)
 		return
 	}
 
-	// **Notify supervisor if submitted**
+	// --- SystemHistory tracking ---
+	statusStr := status
+	comment := ""
 	if payload.Submit {
-		// Fetch supervisor(s)
+		comment = fmt.Sprintf("Submitted proposal: %s", proposal.Title)
+	}
+	c.NotifyAndTrack(
+		user.UserID,
+		"Proposal Created",
+		comment,
+		"CreateProposal",
+		"Proposal",
+		&proposal.ProposalID,
+		statusStr, // pass string, not *string
+	)
+	// --- Notify supervisors automatically ---
+	if payload.Submit {
 		var supervisors []models.User
 		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
 			for _, sup := range supervisors {
-				_ = c.CreateNotification(sup.UserID, "New Proposal Submitted",
-					fmt.Sprintf("Student %s submitted a proposal: %s", user.Username, proposal.Title))
+				c.NotifyAndTrack(
+					sup.UserID,
+					"New Proposal Submitted",
+					fmt.Sprintf("Student %s submitted a proposal: %s", user.Username, proposal.Title),
+					"Notification",
+					"Proposal",
+					&proposal.ProposalID,
+					"", // use empty string if no status
+				)
 			}
 		}
 	}
-
-	// Audit log
-	_ = c.LogAudit(user.UserID, "create_proposal", nil, &proposal.ProposalID, nil, nil)
 
 	resp := map[string]interface{}{
 		"message":     "Proposal created successfully",
@@ -215,19 +229,37 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Notify supervisor if submitted
+	// --- Notify supervisor if submitted ---
 	if payload.Submit != nil && *payload.Submit {
 		var supervisors []models.User
 		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
 			for _, sup := range supervisors {
-				_ = c.CreateNotification(sup.UserID, "Proposal Resubmitted",
-					fmt.Sprintf("Student %s resubmitted proposal: %s", user.Username, proposal.Title))
+				comment := fmt.Sprintf("Student %s resubmitted proposal: %s", user.Username, proposal.Title)
+				statusStr := proposal.Status
+				c.NotifyAndTrack(
+					sup.UserID,
+					"Proposal Resubmitted",
+					comment,
+					"Notification",
+					"Proposal",
+					&proposal.ProposalID,
+					statusStr,
+				)
 			}
 		}
 	}
 
-	// Audit log
-	_ = c.LogAudit(user.UserID, "update_proposal", nil, &proposal.ProposalID, nil, nil)
+	// --- SystemHistory tracking ---
+	statusStr := proposal.Status
+	c.NotifyAndTrack(
+		user.UserID,
+		"Proposal Updated",
+		"Updated proposal: "+proposal.Title,
+		"UpdateProposal",
+		"Proposal",
+		&proposal.ProposalID,
+		statusStr,
+	)
 
 	resp := map[string]interface{}{
 		"message":     "Proposal updated successfully",
@@ -421,9 +453,21 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// --- Log audit ---
+	// --- Log audit and track system history ---
+	titleCaser := cases.Title(language.Und)
 	for _, pid := range body.ProposalIDs {
 		pidStr := strconv.FormatUint(pid, 10)
+		actionComment := fmt.Sprintf("%s proposal", body.Action)
+		statusStr := "" // optional, no specific status here
+		c.NotifyAndTrack(
+			user.UserID,
+			titleCaser.String(body.Action)+" Proposal", // use cases.Title instead of strings.Title
+			actionComment,
+			"ArchiveRestore",
+			"Proposal",
+			&pid,
+			statusStr,
+		)
 		_ = c.LogAudit(user.UserID, body.Action+"_proposal", &pidStr, nil, nil, nil)
 	}
 
@@ -752,4 +796,110 @@ func (c *Construct) DeleteProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("%d proposal(s) deleted successfully", result.RowsAffected), nil)
+}
+
+// ======== GET ========== Approved and Rejected Proposals  ============== APIS ============
+
+// ─── GET APPROVED PROPOSALS ─────────────────────────────────────────────
+func (c *Construct) GetApprovedProposals(w http.ResponseWriter, r *http.Request) {
+	c.getProposalsByStatus(w, r, models.ProposalStatusApproved)
+}
+
+// ─── GET REJECTED PROPOSALS ─────────────────────────────────────────────
+func (c *Construct) GetRejectedProposals(w http.ResponseWriter, r *http.Request) {
+	c.getProposalsByStatus(w, r, models.ProposalStatusRejected)
+}
+
+// ─── SHARED HANDLER ────────────────────────────────────────────────────
+func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request, status string) {
+	user, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	log.Println("──────────────────────────────────────────────")
+	log.Printf("[DEBUG] Role: %s | UserID: %d | Target Status: %s\n", user.Role.Name, user.UserID, status)
+
+	var proposals []models.Proposal
+	query := c.DB.Preload("SubmittedBy.Profile").Preload("Cohort")
+
+	switch user.Role.Name {
+	case "Admin":
+		log.Println("[DEBUG] Admin detected: Fetching all proposals with status", status)
+		query = query.Where("status = ?", status)
+
+	case "Supervisor":
+    if status == models.ProposalStatusApproved || status == models.ProposalStatusRejected {
+        // Show all proposals reviewed by this supervisor
+        query = query.Where("status = ? AND reviewed_by_id = ?", status, user.UserID)
+    } else {
+        // Show proposals in cohorts the supervisor manages
+        var cohortIDs []uint64
+        c.DB.Model(&models.Cohort{}).
+            Where("created_by = ?", user.UserID). // supervisor-created cohorts
+            Pluck("cohort_id", &cohortIDs)
+
+        if len(cohortIDs) > 0 {
+            query = query.Where("status = ? AND cohort_id IN ?", status, cohortIDs)
+        } else {
+            query = query.Where("1 = 0") // no access
+        }
+    }
+
+
+	default: // Student or other roles
+		log.Printf("[DEBUG] Student detected: Fetching proposals with status %s for user_id %d\n", status, user.UserID)
+		query = query.Where("status = ? AND submitted_by_id = ?", status, user.UserID)
+	}
+
+	if err := query.Find(&proposals).Error; err != nil {
+		log.Println("[ERROR] Failed to fetch proposals:", err)
+		http.Error(w, "failed to fetch proposals", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[DEBUG] Found %d proposals for role: %s\n", len(proposals), user.Role.Name)
+
+	// Build response
+	response := []map[string]interface{}{}
+	for _, p := range proposals {
+		submittedBy := map[string]interface{}{
+			"first_name": "",
+			"last_name":  "",
+			"email":      "",
+		}
+		if p.SubmittedBy.Profile.FirstName != "" || p.SubmittedBy.Profile.LastName != "" {
+			submittedBy = map[string]interface{}{
+				"first_name": p.SubmittedBy.Profile.FirstName,
+				"last_name":  p.SubmittedBy.Profile.LastName,
+				"email":      p.SubmittedBy.Email,
+			}
+		}
+
+		response = append(response, map[string]interface{}{
+			"proposal_id": p.ProposalID,
+			"title":       p.Title,
+			"abstract":    p.Abstract,
+			"category":    p.Category,
+			"subfield":    p.Subfield,
+			"status":      p.Status,
+			"cohort": func() string {
+				if p.Cohort != nil {
+					return p.Cohort.Name
+				}
+				return ""
+			}(),
+			"submitted_by": submittedBy,
+		})
+	}
+
+	resp := map[string]interface{}{
+		"status":    status,
+		"total":     len(response),
+		"proposals": response,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
