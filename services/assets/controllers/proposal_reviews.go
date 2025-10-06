@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"web/services/assets/models"
@@ -12,7 +13,21 @@ import (
 	"gorm.io/gorm"
 )
 
-// ─── ADD REVIEW ───────────────────────────────────────────────
+type CohortUser struct {
+	CohortID uint64 `gorm:"primaryKey"`
+	UserID   uint64 `gorm:"primaryKey"`
+	Role     string `gorm:"size:50"` // optional, if you want to track role in cohort
+}
+
+// Assign student to cohort after proposal is approved
+func AssignStudentToCohort(db *gorm.DB, studentID, cohortID uint64) error {
+	cu := models.CohortUser{
+		CohortID: cohortID,
+		UserID:   studentID,
+	}
+	return db.Create(&cu).Error
+}
+
 func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 	// --- Parse proposal_id from query ---
 	proposalIDStr := r.URL.Query().Get("proposal_id")
@@ -49,7 +64,6 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 	if err := c.DB.Preload("SubmittedBy.Profile").
 		Preload("Cohort").
 		First(&proposal, "proposal_id = ?", proposalID).Error; err != nil {
-
 		if err == gorm.ErrRecordNotFound {
 			http.Error(w, "proposal not found", http.StatusNotFound)
 			return
@@ -75,28 +89,13 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to add review", http.StatusInternalServerError)
 		return
 	}
-
-	// --- Supervisor actions ---
-	if user.SupervisorProfile != nil {
-		// --- Move Submitted → Under Review if needed ---
-		if proposal.Status == models.ProposalStatusSubmitted {
-			proposal.Status = models.ProposalStatusUnderReview
-			c.DB.Save(&proposal)
-			c.NotifyAndTrack(
-				proposal.SubmittedByID,
-				"Proposal Under Review",
-				fmt.Sprintf("Proposal '%s' is now under review.", proposal.Title),
-				"Status Change",
-				"Proposal",
-				&proposal.ProposalID,
-				proposal.Status,
-			)
-		}
-
-		// --- Handle decision ---
+	if strings.ToLower(user.Role.Name) == "supervisor" {
 		switch payload.Decision {
 		case models.DecisionApproved:
-			// Ensure cohort assignment
+			proposal.Status = models.ProposalStatusApproved
+			proposal.SubmissionDate = ptrTime(time.Now())
+
+			// Assign cohort if not already assigned
 			if proposal.CohortID == nil {
 				if payload.CohortName == nil || *payload.CohortName == "" {
 					http.Error(w, "cohort_name is required when approving without cohort", http.StatusBadRequest)
@@ -110,50 +109,51 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 				proposal.CohortID = &cohort.CohortID
 			}
 
-			proposal.Status = models.ProposalStatusApproved
-			proposal.SubmissionDate = ptrTime(time.Now())
-			c.DB.Save(&proposal)
+			if err := c.DB.Save(&proposal).Error; err != nil {
+				http.Error(w, "failed to update proposal", http.StatusInternalServerError)
+				return
+			}
 
 			// Assign student to cohort
-			proposal.SubmittedBy.CohortID = proposal.CohortID
-			c.DB.Save(&proposal.SubmittedBy)
-
+			cohortUser := models.CohortUser{
+				CohortID: *proposal.CohortID,
+				UserID:   proposal.SubmittedByID,
+				Role:     "Student",
+			}
+			if err := c.DB.Create(&cohortUser).Error; err != nil {
+				http.Error(w, "failed to assign student to cohort", http.StatusInternalServerError)
+				return
+			}
+			//notify the user
 			c.NotifyAndTrack(
 				proposal.SubmittedByID,
-				"Proposal Approved",
-				"Your proposal has been approved and assigned to cohort "+proposal.Cohort.Name,
-				"Proposal Decision",
-				"Proposal",
-				&proposal.ProposalID,
-				proposal.Status,
+				"Cohort Assignment",
+				fmt.Sprintf("You have been assigned to cohort '%s'. You can now explore it and begin working on your project.", proposal.Cohort.Name),
+				"Cohort Assignment",
+				"Cohort",
+				proposal.CohortID,
+				"Assigned",
 			)
 
 		case models.DecisionRejected:
 			proposal.Status = models.ProposalStatusRejected
-			c.DB.Save(&proposal)
-			c.NotifyAndTrack(
-				proposal.SubmittedByID,
-				"Proposal Rejected",
-				"Your proposal has been reviewed and rejected.",
-				"Proposal Decision",
-				"Proposal",
-				&proposal.ProposalID,
-				proposal.Status,
-			)
+			_ = c.DB.Save(&proposal)
 
 		case models.DecisionNeedsRevision:
 			proposal.Status = models.ProposalStatusNeedsRevision
-			c.DB.Save(&proposal)
-			c.NotifyAndTrack(
-				proposal.SubmittedByID,
-				"Proposal Needs Revision",
-				"Your proposal requires revision. Review the feedback and resubmit.",
-				"Proposal Decision",
-				"Proposal",
-				&proposal.ProposalID,
-				proposal.Status,
-			)
+			_ = c.DB.Save(&proposal)
 		}
+
+		// Notify student
+		c.NotifyAndTrack(
+			proposal.SubmittedByID,
+			fmt.Sprintf("Proposal %s", payload.Decision),
+			fmt.Sprintf("Your proposal '%s' has been %s.", proposal.Title, payload.Decision),
+			"Proposal Decision",
+			"Proposal",
+			&proposal.ProposalID,
+			proposal.Status,
+		)
 	} else {
 		// --- Mentors / other roles just comment ---
 		c.NotifyAndTrack(
@@ -165,6 +165,12 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 			&proposal.ProposalID,
 			proposal.Status,
 		)
+	}
+
+	// --- Reload proposal with cohort for response ---
+	if err := c.DB.Preload("Cohort").Preload("SubmittedBy.Profile").First(&proposal, "proposal_id = ?", proposal.ProposalID).Error; err != nil {
+		http.Error(w, "failed to reload proposal", http.StatusInternalServerError)
+		return
 	}
 
 	// --- Response ---
@@ -200,7 +206,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// helper
+// --- helper ---
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
@@ -250,13 +256,35 @@ func (c *Construct) GetReviews(w http.ResponseWriter, r *http.Request) {
 	// --- Access control: students can only see their own proposals ---
 	filteredProposals := []models.Proposal{}
 	for _, p := range proposals {
-		if user.SupervisorProfile != nil || user.UserID == p.SubmittedByID {
-			filteredProposals = append(filteredProposals, p)
+		// Supervisor access: either reviewed the proposal or the proposal is in their cohort
+		if user.Role.Name == "Supervisor" {
+			var count int64
+			// Check if they reviewed it
+			c.DB.Model(&models.ProposalReview{}).
+				Where("proposal_id = ? AND reviewed_by_id = ?", p.ProposalID, user.UserID).
+				Count(&count)
+			if count > 0 {
+				filteredProposals = append(filteredProposals, p)
+				continue
+			}
+
+			// Check if proposal is in a cohort created by this supervisor
+			if p.CohortID != nil {
+				var cohortCount int64
+				c.DB.Model(&models.Cohort{}).
+					Where("cohort_id = ? AND created_by = ?", *p.CohortID, user.UserID).
+					Count(&cohortCount)
+				if cohortCount > 0 {
+					filteredProposals = append(filteredProposals, p)
+					continue
+				}
+			}
+		} else {
+			// Student: only their own proposals
+			if user.UserID == p.SubmittedByID {
+				filteredProposals = append(filteredProposals, p)
+			}
 		}
-	}
-	if len(filteredProposals) == 0 {
-		http.Error(w, "forbidden: no access to these proposals", http.StatusForbidden)
-		return
 	}
 
 	// --- Fetch all reviews for these proposals ---
@@ -505,7 +533,7 @@ func (c *Construct) UpdateReview(w http.ResponseWriter, r *http.Request) {
 	if payload.Decision != nil {
 		review.Decision = *payload.Decision
 
-		proposal := &review.Proposal
+		proposal := review.Proposal
 		if *payload.Decision == models.DecisionApproved {
 			// Assign cohort if not assigned
 			if proposal.CohortID == nil {
@@ -521,8 +549,21 @@ func (c *Construct) UpdateReview(w http.ResponseWriter, r *http.Request) {
 				proposal.CohortID = &cohort.CohortID
 			}
 
-			proposal.SubmittedBy.CohortID = proposal.CohortID
-			c.DB.Save(&proposal.SubmittedBy)
+			if proposal.CohortID == nil {
+				http.Error(w, "proposal does not have a cohort assigned", http.StatusBadRequest)
+				return
+			}
+
+			cohortUser := models.CohortUser{
+				CohortID: *proposal.CohortID,     // dereference pointer
+				UserID:   proposal.SubmittedByID, // the student
+				Role:     "Student",
+			}
+
+			if err := c.DB.Create(&cohortUser).Error; err != nil {
+				http.Error(w, "failed to assign student to cohort", http.StatusInternalServerError)
+				return
+			}
 
 			proposal.Status = models.ProposalStatusApproved
 			now := time.Now()

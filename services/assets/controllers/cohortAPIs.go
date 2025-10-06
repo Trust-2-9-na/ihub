@@ -92,23 +92,119 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 	c.Json(w, http.StatusCreated, "Cohort created successfully", map[string]interface{}{"cohort": resp})
 }
 
-//------------------------------------------------
+// ------------------------------------------------
 // ** all users View-list Cohort API **
-//-------------------------------------
-
+// -------------------------------------
+// -------------------------------------
 func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
+	// Get logged-in user
+	userUUID, ok := r.Context().Value("user_uuid").(string)
+	if !ok || userUUID == "" {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	var user models.User
+	if err := c.DB.Preload("Role").Preload("Profile").
+		Where("user_uuid = ?", userUUID).
+		First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
 	var cohorts []models.Cohort
-	if err := c.DB.Find(&cohorts).Error; err != nil {
+	query := c.DB.Preload("Creator.Profile").
+		Preload("Users.Profile").
+		Preload("Users.Role").
+		Order("created_at desc")
+
+	switch user.Role.Name {
+	case "Student", "Mentor":
+		// Only fetch cohorts the user belongs to
+		query = query.Joins("JOIN cohort_users cu ON cu.cohort_cohort_id = cohorts.cohort_id").
+			Where("cu.user_user_id = ?", user.UserID)
+	case "Supervisor", "Admin":
+		// Supervisors and admins can see all cohorts
+	default:
+		c.Json(w, http.StatusForbidden, "Role not allowed", nil)
+		return
+	}
+
+	if err := query.Find(&cohorts).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch cohorts", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
+	// Build response
 	var result []map[string]interface{}
 	for _, cohort := range cohorts {
-		// Fetch creator's name
-		var creator models.User
-		if err := c.DB.Preload("Profile").Where("user_uuid = ?", cohort.CreatedBy).First(&creator).Error; err != nil {
-			continue // skip if creator not found
+		members := []map[string]interface{}{}
+		supervisors := []map[string]interface{}{}
+		mentors := []map[string]interface{}{}
+		students := []map[string]interface{}{}
+
+		for _, u := range cohort.Users {
+			fullName := u.Profile.FirstName + " " + u.Profile.LastName
+			userInfo := map[string]interface{}{
+				"user_id":   u.UserID,
+				"full_name": fullName,
+				"role":      u.Role.Name,
+			}
+			members = append(members, userInfo)
+
+			switch u.Role.Name {
+			case "Supervisor":
+				supervisors = append(supervisors, userInfo)
+			case "Mentor":
+				mentors = append(mentors, userInfo)
+			case "Student":
+				students = append(students, userInfo)
+			}
+		}
+
+		// Ensure creator is included as a supervisor
+		creatorFullName := cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName
+		alreadySupervisor := false
+		for _, sup := range supervisors {
+			if sup["user_id"] == cohort.Creator.UserID {
+				alreadySupervisor = true
+				break
+			}
+		}
+		if !alreadySupervisor {
+			supervisors = append(supervisors, map[string]interface{}{
+				"user_id":   cohort.Creator.UserID,
+				"full_name": creatorFullName,
+				"role":      "Supervisor",
+			})
+		}
+
+		// Fetch approved proposals for students in this cohort
+		var proposals []models.Proposal
+		studentIDs := []uint64{}
+		for _, s := range students {
+			if id, ok := s["user_id"].(uint64); ok {
+				studentIDs = append(studentIDs, id)
+			}
+		}
+		if len(studentIDs) > 0 {
+			c.DB.Preload("SubmittedBy.Profile").
+				Where("submitted_by_id IN ? AND status = ?", studentIDs, "Approved").
+				Find(&proposals)
+		}
+
+		proposalsResp := []map[string]interface{}{}
+		for _, p := range proposals {
+			proposalsResp = append(proposalsResp, map[string]interface{}{
+				"proposal_id":  p.ProposalID,
+				"title":        p.Title,
+				"abstract":     p.Abstract,
+				"category":     p.Category,
+				"subfield":     p.Subfield,
+				"status":       p.Status,
+				"submitted_by": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName,
+				"document_url": p.DocumentURL,
+			})
 		}
 
 		result = append(result, map[string]interface{}{
@@ -118,10 +214,15 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 			"start_date":  cohort.StartDate,
 			"end_date":    cohort.EndDate,
 			"created_by": map[string]string{
-				"first_name": creator.Profile.FirstName,
-				"last_name":  creator.Profile.LastName,
+				"full_name": creatorFullName,
 			},
-			"created_at": cohort.CreatedAt,
+			"members":     members,
+			"supervisors": supervisors,
+			"mentors":     mentors,
+			"students":    students,
+			"proposals":   proposalsResp,
+			"created_at":  cohort.CreatedAt,
+			"user_role":   user.Role.Name, // include current user role for frontend action control
 		})
 	}
 

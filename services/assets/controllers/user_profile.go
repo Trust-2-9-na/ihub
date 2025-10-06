@@ -2,8 +2,11 @@ package controllers
 
 import (
 	"encoding/json"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"web/services/assets/models"
 )
 
@@ -88,7 +91,6 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// Return JSON response
 	c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
 }
-
 
 // UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +213,7 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UpdateAvatar handles PATCH /api/profile/{user_id}/avatar
+// UpdateAvatar updates a user's avatar with file validation
 func (c *Construct) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 	userIDStr := r.URL.Query().Get("user_id")
 	if userIDStr == "" {
@@ -228,6 +230,36 @@ func (c *Construct) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Validate file extension ---
+	allowedExts := map[string]bool{
+		".jpg":  true,
+		".jpeg": true,
+		".png":  true,
+		".gif":  true,
+		".webp": true,
+	}
+
+	ext := strings.ToLower(filepath.Ext(payload.AvatarURL))
+	if !allowedExts[ext] {
+		c.Json(w, http.StatusBadRequest, "Invalid file type. Allowed: .jpg, .jpeg, .png, .gif, .webp", nil)
+		return
+	}
+
+	// --- Validate MIME type ---
+	mimeType := mime.TypeByExtension(ext)
+	allowedMIMEs := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/gif":  true,
+		"image/webp": true,
+	}
+
+	if !allowedMIMEs[mimeType] {
+		c.Json(w, http.StatusBadRequest, "Invalid MIME type for image", nil)
+		return
+	}
+
+	// --- Find and update profile ---
 	var profile models.UserProfile
 	if err := c.DB.Where("user_id = ?", userID).First(&profile).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Profile not found", nil)

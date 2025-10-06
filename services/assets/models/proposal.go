@@ -70,7 +70,7 @@ type Proposal struct {
 type ProposalReview struct {
 	ReviewID     uint64         `gorm:"primaryKey;autoIncrement" json:"review_id"`
 	ProposalID   uint64         `gorm:"not null;index" json:"proposal_id"`
-	Proposal     Proposal       `gorm:"foreignKey:ProposalID;references:ProposalID" json:"proposal,omitempty"`
+	Proposal     *Proposal      `gorm:"foreignKey:ProposalID;references:ProposalID" json:"proposal,omitempty"`
 	ReviewedByID uint64         `gorm:"not null;index" json:"reviewed_by"`
 	ReviewedBy   *User          `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by_user"`
 	Comments     *string        `gorm:"type:text" json:"comments,omitempty"`

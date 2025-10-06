@@ -75,6 +75,23 @@ CREATE TABLE IF NOT EXISTS user_teams (
 		log.Printf("Migration failed for Cohorts: %v", err)
 		return err
 	}
+	// Cohort users (many-to-many)
+	err = db.Exec(`
+CREATE TABLE IF NOT EXISTS cohort_users (
+    cohort_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    role VARCHAR(20) DEFAULT 'Student',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (cohort_id, user_id),
+    CONSTRAINT fk_cohortusers_cohort FOREIGN KEY (cohort_id) REFERENCES cohorts(cohort_id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_cohortusers_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+`).Error
+
+	if err != nil {
+		log.Printf("Migration failed for CohortUsers: %v", err)
+		return err
+	}
 
 	// 8️⃣ Audit Logs
 	if err := db.AutoMigrate(&models.AuditLog{}); err != nil {

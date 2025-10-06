@@ -14,14 +14,14 @@ type Role struct {
 }
 
 type User struct {
-	UserID       uint64  `json:"user_id" gorm:"primaryKey;autoIncrement"`
-	UserUUID     string  `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
-	Username     string  `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
-	Email        string  `json:"email" gorm:"size:150;unique;not null"`
-	PasswordHash string  `json:"-" gorm:"column:password_hash;size:255;not null"`
-	RoleID       uint    `json:"role_id"`
-	CohortID     *uint64 `json:"cohort_id"`
-	IsActive     bool    `json:"is_active" gorm:"default:true"`
+	UserID       uint64   `json:"user_id" gorm:"primaryKey;autoIncrement"`
+	UserUUID     string   `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
+	Username     string   `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
+	Email        string   `json:"email" gorm:"size:150;unique;not null"`
+	PasswordHash string   `json:"-" gorm:"column:password_hash;size:255;not null"`
+	RoleID       uint     `json:"role_id"`
+	Cohorts      []Cohort `gorm:"many2many:cohort_users;" json:"cohorts,omitempty"`
+	IsActive     bool     `json:"is_active" gorm:"default:true"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	Profile      UserProfile    `gorm:"foreignKey:UserID; references:UserID"`                                              // one-to-one link

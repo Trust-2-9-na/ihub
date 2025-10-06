@@ -53,6 +53,53 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ─── Validate Document Type ────────────────────────────────
+	if payload.Document != nil && *payload.Document != "" {
+		allowedExts := []string{".pdf", ".docx"}
+		allowedMIMEs := []string{
+			"application/pdf",
+			"application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		}
+
+		// --- Extension validation ---
+		validExt := false
+		for _, ext := range allowedExts {
+			if strings.HasSuffix(strings.ToLower(*payload.Document), ext) {
+				validExt = true
+				break
+			}
+		}
+
+		if !validExt {
+			http.Error(w, "invalid document type: only PDF and DOCX files are allowed", http.StatusBadRequest)
+			return
+		}
+
+		// --- MIME type validation (only if file bytes available) ---
+		file, _, err := r.FormFile("document")
+		if err == nil {
+			defer file.Close()
+			buf := make([]byte, 512)
+			_, _ = file.Read(buf)
+			mimeType := http.DetectContentType(buf)
+
+			validMime := false
+			for _, m := range allowedMIMEs {
+				if mimeType == m {
+					validMime = true
+					break
+				}
+			}
+
+			if !validMime {
+				http.Error(w, "invalid file content type", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	// ─── Get User from Context ────────────────────────────────
 	userUUID, ok := r.Context().Value("user_uuid").(string)
 	if !ok || userUUID == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -65,12 +112,14 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ─── Validate Window ───────────────────────────────────────
 	var window models.ProposalSubmissionWindow
 	if err := c.DB.First(&window, "window_id = ?", payload.WindowID).Error; err != nil {
 		http.Error(w, "submission window not found", http.StatusBadRequest)
 		return
 	}
 
+	// ─── Validate Team ─────────────────────────────────────────
 	if payload.TeamID != nil {
 		var team models.Team
 		if err := c.DB.First(&team, "team_id = ?", *payload.TeamID).Error; err != nil {
@@ -79,6 +128,7 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ─── Determine Status ─────────────────────────────────────
 	status := models.ProposalStatusDraft
 	var submissionDate *time.Time
 	if payload.Submit {
@@ -87,6 +137,7 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		submissionDate = &t
 	}
 
+	// ─── Create Proposal Record ────────────────────────────────
 	proposal := models.Proposal{
 		Title:          payload.Title,
 		Abstract:       payload.Abstract,
@@ -105,12 +156,12 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- SystemHistory tracking ---
-	statusStr := status
+	// ─── Track History ─────────────────────────────────────────
 	comment := ""
 	if payload.Submit {
 		comment = fmt.Sprintf("Submitted proposal: %s", proposal.Title)
 	}
+
 	c.NotifyAndTrack(
 		user.UserID,
 		"Proposal Created",
@@ -118,9 +169,10 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		"CreateProposal",
 		"Proposal",
 		&proposal.ProposalID,
-		statusStr, // pass string, not *string
+		status,
 	)
-	// --- Notify supervisors automatically ---
+
+	// ─── Notify Supervisors if Submitted ───────────────────────
 	if payload.Submit {
 		var supervisors []models.User
 		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
@@ -132,12 +184,13 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 					"Notification",
 					"Proposal",
 					&proposal.ProposalID,
-					"", // use empty string if no status
+					status,
 				)
 			}
 		}
 	}
 
+	// ─── Response ─────────────────────────────────────────────
 	resp := map[string]interface{}{
 		"message":     "Proposal created successfully",
 		"proposal_id": proposal.ProposalID,
@@ -169,32 +222,85 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		TeamID   *uint64 `json:"team_id"`
 		Submit   *bool   `json:"submit"` // optional submit flag
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
 
-	// Current user
-	userUUID := r.Context().Value("user_uuid").(string)
+	// ─── Validate Document Type (PDF or DOCX only) ─────────────────────────────
+	if payload.Document != nil && *payload.Document != "" {
+		allowedExts := []string{".pdf", ".docx"}
+		allowedMIMEs := []string{
+			"application/pdf",
+			"application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		}
+
+		// --- Extension validation ---
+		validExt := false
+		for _, ext := range allowedExts {
+			if strings.HasSuffix(strings.ToLower(*payload.Document), ext) {
+				validExt = true
+				break
+			}
+		}
+
+		if !validExt {
+			http.Error(w, "invalid document type: only PDF and DOCX files are allowed", http.StatusBadRequest)
+			return
+		}
+
+		// --- MIME type validation (only if file bytes available) ---
+		file, _, err := r.FormFile("document")
+		if err == nil {
+			defer file.Close()
+			buf := make([]byte, 512)
+			_, _ = file.Read(buf)
+			mimeType := http.DetectContentType(buf)
+
+			validMime := false
+			for _, m := range allowedMIMEs {
+				if mimeType == m {
+					validMime = true
+					break
+				}
+			}
+
+			if !validMime {
+				http.Error(w, "invalid file content type", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	// ─── Get Current User ──────────────────────────────────────────────────────
+	userUUID, ok := r.Context().Value("user_uuid").(string)
+	if !ok || userUUID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	var user models.User
 	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		http.Error(w, "user not found", http.StatusUnauthorized)
 		return
 	}
 
-	// Fetch proposal
+	// ─── Fetch Proposal ───────────────────────────────────────────────────────
 	var proposal models.Proposal
 	if err := c.DB.First(&proposal, "proposal_id = ?", proposalID).Error; err != nil {
 		http.Error(w, "proposal not found", http.StatusNotFound)
 		return
 	}
 
+	// ─── Authorization Check ───────────────────────────────────────────────────
 	if proposal.SubmittedByID != user.UserID {
 		http.Error(w, "not allowed to update this proposal", http.StatusForbidden)
 		return
 	}
 
-	// Update fields
+	// ─── Update Fields ─────────────────────────────────────────────────────────
 	if payload.Title != nil {
 		proposal.Title = *payload.Title
 	}
@@ -217,7 +323,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		proposal.TeamID = payload.TeamID
 	}
 
-	// Handle submission
+	// ─── Handle Submission ─────────────────────────────────────────────────────
 	if payload.Submit != nil && *payload.Submit {
 		proposal.Status = models.ProposalStatusSubmitted
 		t := time.Now()
@@ -229,7 +335,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Notify supervisor if submitted ---
+	// ─── Notify Supervisors if Submitted ───────────────────────────────────────
 	if payload.Submit != nil && *payload.Submit {
 		var supervisors []models.User
 		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
@@ -249,7 +355,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- SystemHistory tracking ---
+	// ─── SystemHistory Tracking ────────────────────────────────────────────────
 	statusStr := proposal.Status
 	c.NotifyAndTrack(
 		user.UserID,
@@ -261,6 +367,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		statusStr,
 	)
 
+	// ─── Response ─────────────────────────────────────────────────────────────
 	resp := map[string]interface{}{
 		"message":     "Proposal updated successfully",
 		"proposal_id": proposal.ProposalID,
@@ -271,9 +378,10 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// ─── GET OWN PROPOSAL ───────────────────────────────────────
+//=========++++======== GET PRoposals ==============+=+++==================+=======
+
 func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
-	// Get logged-in user UUID from context
+	// --- Get logged-in user ---
 	userUUID, ok := r.Context().Value("user_uuid").(string)
 	if !ok || userUUID == "" {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -281,24 +389,50 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user models.User
-	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		http.Error(w, "User not found", http.StatusUnauthorized)
 		return
 	}
 
-	// Fetch user's proposals with window and team
-	var proposals []models.Proposal
-	if err := c.DB.Preload("Window").
+	// --- Base query ---
+	query := c.DB.Preload("Window").
 		Preload("Team").
 		Preload("Team.Users.Profile").
-		Where("submitted_by_id = ? AND archived = ?", user.UserID, false).
-		Order("created_at desc").
-		Find(&proposals).Error; err != nil {
+		Preload("SubmittedBy.Profile").
+		Preload("Cohort").
+		Where("archived = ?", false).
+		Order("created_at desc")
+
+	// --- Role-based filtering ---
+	switch user.Role.Name {
+	case "Student":
+		// Student sees their own proposals including drafts
+		query = query.Where("submitted_by_id = ?", user.UserID)
+
+	case "Supervisor":
+		// Supervisors see proposals in their cohorts, excluding drafts
+		query = query.Where("status != ?", "Draft")
+		var cohortIDs []uint64
+		c.DB.Model(&models.Cohort{}).Where("created_by = ?", user.UserID).Pluck("cohort_id", &cohortIDs)
+		if len(cohortIDs) > 0 {
+			query = query.Where("cohort_id IN ?", cohortIDs)
+		} else {
+			query = query.Where("1 = 0") // no cohorts → no access
+		}
+
+	case "Admin":
+		// Admins see all non-draft proposals
+		query = query.Where("status != ?", "Draft")
+	}
+
+	// --- Fetch proposals ---
+	var proposals []models.Proposal
+	if err := query.Find(&proposals).Error; err != nil {
 		http.Error(w, "Failed to fetch proposals", http.StatusInternalServerError)
 		return
 	}
 
-	// Build response
+	// --- Build response types ---
 	type reviewResp struct {
 		ReviewID   uint64  `json:"review_id"`
 		Comments   *string `json:"comments,omitempty"`
@@ -329,20 +463,25 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 		Team        *teamResp    `json:"team,omitempty"`
 		Reviews     []reviewResp `json:"reviews,omitempty"`
 		CreatedAt   string       `json:"created_at"`
+		Cohort      string       `json:"cohort,omitempty"`
 	}
 
+	// --- Build response data ---
 	var resp []proposalResp
 	for _, p := range proposals {
-		// Fetch reviews for this proposal
+		// Fetch reviews
 		var reviews []models.ProposalReview
-		if err := c.DB.Preload("ReviewedBy.Profile").
-			Where("proposal_id = ?", p.ProposalID).Find(&reviews).Error; err != nil {
+		if err := c.DB.Preload("ReviewedBy.Profile").Where("proposal_id = ?", p.ProposalID).Find(&reviews).Error; err != nil {
 			reviews = []models.ProposalReview{}
 		}
 
 		var revs []reviewResp
 		for _, r := range reviews {
-			reviewer := r.ReviewedBy.Profile.FirstName + " " + r.ReviewedBy.Profile.LastName
+			reviewer := ""
+			if r.ReviewedBy != nil {
+				reviewer = strings.TrimSpace(r.ReviewedBy.Profile.FirstName + " " + r.ReviewedBy.Profile.LastName)
+			}
+
 			revs = append(revs, reviewResp{
 				ReviewID:   r.ReviewID,
 				Comments:   r.Comments,
@@ -361,6 +500,11 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		cohortName := ""
+		if p.Cohort != nil {
+			cohortName = p.Cohort.Name
+		}
+
 		resp = append(resp, proposalResp{
 			ProposalID:  p.ProposalID,
 			Title:       p.Title,
@@ -376,6 +520,7 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 			Team:      team,
 			Reviews:   revs,
 			CreatedAt: p.CreatedAt.Format("2006-01-02"),
+			Cohort:    cohortName,
 		})
 	}
 
@@ -527,6 +672,7 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 }
 
 // =============GET ARCHIVED PROPOSALS ===========================================
+
 func (c *Construct) GetArchivedProposals(w http.ResponseWriter, r *http.Request) {
 	userUUIDCtx := r.Context().Value("user_uuid")
 	if userUUIDCtx == nil {
@@ -624,10 +770,10 @@ func ifNotNilStr[T any](val *T, f func(*T) string) string {
 }
 
 // ─── GET PROPOSALS WITH PAGINATION ─────────────────────────────
-func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
-	// Default pagination values
-	page, limit := 1, 10
 
+func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
+	// --- Pagination ---
+	page, limit := 1, 10
 	if p := r.URL.Query().Get("page"); p != "" {
 		if pp, err := strconv.Atoi(p); err == nil && pp > 0 {
 			page = pp
@@ -638,31 +784,56 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 			limit = ll
 		}
 	}
-
 	offset := (page - 1) * limit
 
-	// Count total proposals
-	var total int64
-	if err := c.DB.Model(&models.Proposal{}).
+	// --- Get logged-in user ---
+	userUUID, ok := r.Context().Value("user_uuid").(string)
+	if !ok || userUUID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var user models.User
+	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		http.Error(w, "User not found", http.StatusUnauthorized)
+		return
+	}
+
+	// --- Base query ---
+	query := c.DB.Preload("SubmittedBy.Profile").
+		Preload("Team.Users.Profile").
+		Preload("Window").
+		Preload("Cohort").
 		Where("archived = ?", false).
-		Count(&total).Error; err != nil {
+		Order("created_at desc")
+
+	// --- Role-based filtering ---
+	switch user.Role.Name {
+	case "Student":
+		query = query.Where("submitted_by_id = ?", user.UserID)
+	case "Supervisor":
+		// Supervisors only see proposals in windows they created AND not draft
+		query = query.Joins("JOIN proposal_submission_windows w ON proposals.window_id = w.window_id").
+			Where("w.created_by_id = ? AND proposals.status != ?", user.UserID, "Draft")
+	default: // Admin
+		// Admin sees all non-draft proposals
+		query = query.Where("status != ?", "Draft")
+	}
+
+	// --- Count total after filtering ---
+	var total int64
+	if err := query.Model(&models.Proposal{}).Count(&total).Error; err != nil {
 		http.Error(w, "failed to count proposals", http.StatusInternalServerError)
 		return
 	}
 
-	// Fetch proposals with relations
+	// --- Fetch proposals with pagination ---
 	var proposals []models.Proposal
-	if err := c.DB.Preload("SubmittedBy.Profile").
-		Preload("Team.Users.Profile").
-		Preload("Window").
-		Where("archived = ?", false).
-		Offset(offset).Limit(limit).
-		Find(&proposals).Error; err != nil {
+	if err := query.Limit(limit).Offset(offset).Find(&proposals).Error; err != nil {
 		http.Error(w, "failed to fetch proposals", http.StatusInternalServerError)
 		return
 	}
 
-	// DTO
+	// --- Build response ---
 	type ProposalSummary struct {
 		ProposalID  uint64   `json:"proposal_id"`
 		Title       string   `json:"title"`
@@ -673,27 +844,29 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		Status      string   `json:"status"`
 		SubmittedBy string   `json:"submitted_by"`
 		WindowTitle string   `json:"window_title"`
+		Cohort      string   `json:"cohort,omitempty"`
 		TeamName    string   `json:"team_name,omitempty"`
 		TeamMembers []string `json:"team_members,omitempty"`
 		CreatedAt   string   `json:"created_at"`
 	}
 
 	var resp []ProposalSummary
-
 	for _, p := range proposals {
-		// Handle SubmittedBy
 		submittedBy := ""
 		if p.SubmittedBy.UserID != 0 {
 			submittedBy = p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName
 		}
 
-		// Handle Window
 		windowTitle := ""
 		if p.Window.WindowID != 0 {
 			windowTitle = p.Window.Title
 		}
 
-		// Handle Team & Members
+		cohortName := ""
+		if p.Cohort != nil {
+			cohortName = p.Cohort.Name
+		}
+
 		teamName := ""
 		var teamMembers []string
 		if p.Team != nil && p.Team.TeamID != 0 {
@@ -706,7 +879,6 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Safe nil handling
 		documentURL := ""
 		if p.DocumentURL != nil {
 			documentURL = *p.DocumentURL
@@ -726,13 +898,14 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 			Status:      p.Status,
 			SubmittedBy: submittedBy,
 			WindowTitle: windowTitle,
+			Cohort:      cohortName,
 			TeamName:    teamName,
 			TeamMembers: teamMembers,
 			CreatedAt:   p.CreatedAt.Format("2006-01-02 15:04"),
 		})
 	}
 
-	// Response
+	// --- Send response ---
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"page":      page,
@@ -741,6 +914,8 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		"proposals": resp,
 	})
 }
+
+//=======++=============++ DELETE API ++===============++===================++==================
 
 // DeleteProposal allows a student to delete one or multiple of their own proposals via JSON
 func (c *Construct) DeleteProposal(w http.ResponseWriter, r *http.Request) {
@@ -809,8 +984,6 @@ func (c *Construct) GetApprovedProposals(w http.ResponseWriter, r *http.Request)
 func (c *Construct) GetRejectedProposals(w http.ResponseWriter, r *http.Request) {
 	c.getProposalsByStatus(w, r, models.ProposalStatusRejected)
 }
-
-// ─── SHARED HANDLER ────────────────────────────────────────────────────
 func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request, status string) {
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
@@ -818,41 +991,29 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	log.Println("──────────────────────────────────────────────")
 	log.Printf("[DEBUG] Role: %s | UserID: %d | Target Status: %s\n", user.Role.Name, user.UserID, status)
 
 	var proposals []models.Proposal
-	query := c.DB.Preload("SubmittedBy.Profile").Preload("Cohort")
+	query := c.DB.Preload("SubmittedBy.Profile").Preload("Cohort").Preload("Team")
 
 	switch user.Role.Name {
 	case "Admin":
-		log.Println("[DEBUG] Admin detected: Fetching all proposals with status", status)
+		log.Println("[DEBUG] Admin detected: fetching all proposals with status", status)
 		query = query.Where("status = ?", status)
 
 	case "Supervisor":
-    if status == models.ProposalStatusApproved || status == models.ProposalStatusRejected {
-        // Show all proposals reviewed by this supervisor
-        query = query.Where("status = ? AND reviewed_by_id = ?", status, user.UserID)
-    } else {
-        // Show proposals in cohorts the supervisor manages
-        var cohortIDs []uint64
-        c.DB.Model(&models.Cohort{}).
-            Where("created_by = ?", user.UserID). // supervisor-created cohorts
-            Pluck("cohort_id", &cohortIDs)
+		log.Println("[DEBUG] Supervisor detected: fetching proposals reviewed by them")
+		// Join proposals with reviews table to fetch proposals reviewed by this supervisor
+		query = query.Joins("JOIN proposal_reviews pr ON pr.proposal_id = proposals.proposal_id").
+			Where("pr.reviewed_by_id = ? AND pr.decision IN ?", user.UserID, []string{"Approved", "Rejected"}).
+			Distinct("proposals.proposal_id") // Avoid duplicates
 
-        if len(cohortIDs) > 0 {
-            query = query.Where("status = ? AND cohort_id IN ?", status, cohortIDs)
-        } else {
-            query = query.Where("1 = 0") // no access
-        }
-    }
-
-
-	default: // Student or other roles
-		log.Printf("[DEBUG] Student detected: Fetching proposals with status %s for user_id %d\n", status, user.UserID)
+	default: // Student
+		log.Printf("[DEBUG] Student detected: fetching proposals with status %s for user_id %d\n", status, user.UserID)
 		query = query.Where("status = ? AND submitted_by_id = ?", status, user.UserID)
 	}
 
+	// Execute the query
 	if err := query.Find(&proposals).Error; err != nil {
 		log.Println("[ERROR] Failed to fetch proposals:", err)
 		http.Error(w, "failed to fetch proposals", http.StatusInternalServerError)
@@ -861,15 +1022,46 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 
 	log.Printf("[DEBUG] Found %d proposals for role: %s\n", len(proposals), user.Role.Name)
 
-	// Build response
+	// Build the response
 	response := []map[string]interface{}{}
 	for _, p := range proposals {
+		// Fetch reviews for this proposal
+		var proposalReviews []models.ProposalReview
+		if err := c.DB.Preload("ReviewedBy.Profile").
+			Where("proposal_id = ? AND decision IN ?", p.ProposalID, []string{"Approved", "Rejected"}).
+			Find(&proposalReviews).Error; err != nil {
+			log.Println("[ERROR] Failed to fetch reviews for proposal", p.ProposalID, ":", err)
+		}
+
+		reviews := []map[string]interface{}{}
+		for _, r := range proposalReviews {
+			reviewer := map[string]interface{}{
+				"first_name": "",
+				"last_name":  "",
+				"email":      "",
+			}
+			if r.ReviewedBy != nil {
+				reviewer = map[string]interface{}{
+					"first_name": r.ReviewedBy.Profile.FirstName,
+					"last_name":  r.ReviewedBy.Profile.LastName,
+					"email":      r.ReviewedBy.Email,
+				}
+			}
+			reviews = append(reviews, map[string]interface{}{
+				"reviewed_by_id": r.ReviewedByID,
+				"reviewed_by":    reviewer,
+				"decision":       r.Decision,
+				"comments":       r.Comments,
+				"review_date":    r.ReviewDate,
+			})
+		}
+
 		submittedBy := map[string]interface{}{
 			"first_name": "",
 			"last_name":  "",
 			"email":      "",
 		}
-		if p.SubmittedBy.Profile.FirstName != "" || p.SubmittedBy.Profile.LastName != "" {
+		if p.SubmittedBy != nil {
 			submittedBy = map[string]interface{}{
 				"first_name": p.SubmittedBy.Profile.FirstName,
 				"last_name":  p.SubmittedBy.Profile.LastName,
@@ -878,19 +1070,28 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 		}
 
 		response = append(response, map[string]interface{}{
-			"proposal_id": p.ProposalID,
-			"title":       p.Title,
-			"abstract":    p.Abstract,
-			"category":    p.Category,
-			"subfield":    p.Subfield,
-			"status":      p.Status,
+			"proposal_id":     p.ProposalID,
+			"title":           p.Title,
+			"abstract":        p.Abstract,
+			"document_url":    p.DocumentURL,
+			"category":        p.Category,
+			"subfield":        p.Subfield,
+			"status":          p.Status,
+			"submission_date": p.SubmissionDate,
 			"cohort": func() string {
 				if p.Cohort != nil {
 					return p.Cohort.Name
 				}
 				return ""
 			}(),
+			"team": func() string {
+				if p.Team != nil {
+					return p.Team.Name
+				}
+				return ""
+			}(),
 			"submitted_by": submittedBy,
+			"reviews":      reviews,
 		})
 	}
 
