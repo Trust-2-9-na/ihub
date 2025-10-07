@@ -53,9 +53,16 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/cohorts", c.DeleteCohorts).Methods("DELETE")
 	admin.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
 	admin.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
-	admin.HandleFunc("/cohort/overview/{cohort_id}", c.GetCohortOverview).Methods("GET")
-	admin.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list all reviews
+	admin.HandleFunc("/cohorts/archive", c.ArchiveCohort).Methods("PATCH")
+	admin.HandleFunc("/cohorts/restore", c.RestoreCohort).Methods("PATCH")
+	admin.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
+	admin.HandleFunc("/students/remove", c.RemoveStudentFromCohort).Methods("DELETE")
+	admin.HandleFunc("/tracking/cohorts", c.CohortTrackingHistory).Methods("GET")
+	admin.HandleFunc("/reviews", c.GetReviews).Methods("GET") // list all reviews
+	admin.HandleFunc("/reviews/comments", c.GetMyReviews).Methods("GET")
+	admin.HandleFunc("/reviews", c.UpdateReviewByProposal).Methods("PUT")
 	admin.HandleFunc("/reviews", c.AddReview).Methods("POST")
+	admin.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
 	admin.HandleFunc("/proposals", c.GetProposals).Methods("GET")                  // list all proposals
 	admin.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // view single proposal
 	admin.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
@@ -63,7 +70,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
 	admin.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
 	admin.HandleFunc("/proposals/archived", c.GetArchivedProposals).Methods("GET")
-	admin.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
+	admin.HandleFunc("/tracking/proposals", c.ProposalTrackingHistory).Methods("GET")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -79,25 +86,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
 	supervisor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
 	supervisor.HandleFunc("/notifications", c.CreateNotificationHandler).Methods("POST")
-	supervisor.HandleFunc("/cohorts", c.CreateCohort).Methods("POST")
-	supervisor.HandleFunc("/cohorts", c.DeleteCohorts).Methods("DELETE")
-	supervisor.HandleFunc("/cohorts/{cohort_id}", c.UpdateCohort).Methods("PUT")
-	supervisor.HandleFunc("/cohort/overview/{cohort_id}", c.GetCohortOverview).Methods("GET")
 	supervisor.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
-	supervisor.HandleFunc("/proposals", c.GetProposals).Methods("GET")                  // list all proposals
-	supervisor.HandleFunc("/proposals/{proposal_id}", c.GetOwnProposals).Methods("GET") // get single proposal
-	supervisor.HandleFunc("/proposals/archive", c.ArchiveRestoreProposals).Methods("PATCH")
-	supervisor.HandleFunc("/proposals/archived", c.GetArchivedProposals).Methods("GET")
-	supervisor.HandleFunc("/proposals/approved", c.GetApprovedProposals).Methods("GET")
-	supervisor.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
-	supervisor.HandleFunc("/reviews", c.GetReviews).Methods("GET")
-	supervisor.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list all reviews
-	supervisor.HandleFunc("/reviews", c.AddReview).Methods("POST")
-	supervisor.HandleFunc("/reviews", c.UpdateReview).Methods("PUT")
-	supervisor.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
-	supervisor.HandleFunc("/submission-windows", c.CreateSubmissionWindow).Methods("POST")
-	supervisor.HandleFunc("/submission-windows", c.GetSubmissionWindows).Methods("GET")
-	supervisor.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
+	supervisor.HandleFunc("/tracking/cohorts", c.CohortTrackingHistory).Methods("GET") // list all proposals
+	supervisor.HandleFunc("/tracking/proposals", c.ProposalTrackingHistory).Methods("GET")
 
 	// -----------------------------
 	// MENTOR ROUTES
@@ -113,12 +104,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor.HandleFunc("/notifications/mark-all", c.MarkAllNotificationsRead).Methods("PATCH")
 	mentor.HandleFunc("/notifications", c.DeleteNotification).Methods("DELETE")
 	mentor.HandleFunc("/cohorts", c.GetCohorts).Methods("GET")
-	mentor.HandleFunc("/proposals", c.GetProposals).Methods("GET") // list assigned/all proposals
-	mentor.HandleFunc("/proposals", c.GetProposals).Methods("GET")
-	mentor.HandleFunc("/reviews", c.GetMyReviews).Methods("GET") // list assigned/all reviews
-	mentor.HandleFunc("/reviews", c.AddReview).Methods("POST")
-	mentor.HandleFunc("/reviews", c.DeleteReview).Methods("DELETE")
-
+	mentor.HandleFunc("/tracking/cohorts", c.CohortTrackingHistory).Methods("GET")
 	// -----------------------------
 	// STUDENT ROUTES
 	// -----------------------------
@@ -143,6 +129,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.HandleFunc("/proposals/approved", c.GetApprovedProposals).Methods("GET")
 	student.HandleFunc("/proposals/rejected", c.GetRejectedProposals).Methods("GET")
 	student.HandleFunc("/reviews/{review_id}", c.DeleteReview).Methods("DELETE")
-	student.HandleFunc("/tracking", c.GetTrackingHistory).Methods("GET")
+	student.HandleFunc("/tracking/proposals", c.ProposalTrackingHistory).Methods("GET")
+	student.HandleFunc("/tracking/cohorts", c.CohortTrackingHistory).Methods("GET")
 
 }

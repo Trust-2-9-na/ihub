@@ -14,9 +14,10 @@ type Cohort struct {
 	EndDate     string `gorm:"not null" json:"end_date"`
 
 	// Track who created the cohort
-	CreatedBy string `gorm:"type:uuid;not null" json:"created_by"`
-	Creator   User   `gorm:"foreignKey:CreatedBy;references:UserUUID" json:"creator,omitempty"`
-	Users     []User `gorm:"many2many:cohort_users;" json:"users,omitempty"`
+	CreatedBy  string `gorm:"type:uuid;not null" json:"created_by"`
+	Creator    User   `gorm:"foreignKey:CreatedBy;references:UserUUID" json:"creator,omitempty"`
+	Users      []User `gorm:"many2many:cohort_users;" json:"users,omitempty"`
+	IsArchived bool   `gorm:"default:false" json:"is_archived"`
 
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`

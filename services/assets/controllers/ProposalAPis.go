@@ -173,12 +173,13 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// ─── Notify Supervisors if Submitted ───────────────────────
+	// ─── Notify Admins if Submitted ───────────────────────────────
 	if payload.Submit {
-		var supervisors []models.User
-		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
-			for _, sup := range supervisors {
+		var admins []models.User
+		if err := c.DB.Joins("Role").Where("roles.name = ?", "Admin").Find(&admins).Error; err == nil {
+			for _, admin := range admins {
 				c.NotifyAndTrack(
-					sup.UserID,
+					admin.UserID,
 					"New Proposal Submitted",
 					fmt.Sprintf("Student %s submitted a proposal: %s", user.Username, proposal.Title),
 					"Notification",
@@ -336,20 +337,20 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ─── Notify Supervisors if Submitted ───────────────────────────────────────
+	// ─── Notify Admins if Submitted ───────────────────────────────
 	if payload.Submit != nil && *payload.Submit {
-		var supervisors []models.User
-		if err := c.DB.Joins("Role").Where("roles.name = ?", "Supervisor").Find(&supervisors).Error; err == nil {
-			for _, sup := range supervisors {
+		var admins []models.User
+		if err := c.DB.Joins("Role").Where("roles.name = ?", "Admin").Find(&admins).Error; err == nil {
+			for _, admin := range admins {
 				comment := fmt.Sprintf("Student %s resubmitted proposal: %s", user.Username, proposal.Title)
-				statusStr := proposal.Status
 				c.NotifyAndTrack(
-					sup.UserID,
+					admin.UserID,
 					"Proposal Resubmitted",
 					comment,
 					"Notification",
 					"Proposal",
 					&proposal.ProposalID,
-					statusStr,
+					proposal.Status,
 				)
 			}
 		}

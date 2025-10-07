@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
@@ -17,10 +18,9 @@ import (
 //------------------------------------
 // ** Supervisor create Cohort API **
 //------------------------------------
-// CreateCohort handles creating a new cohort and returns creator's full name
 
 func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
-	// Get logged-in user's UUID from context
+	// --- 1. Authenticate user ---
 	userUUIDCtx := r.Context().Value("user_uuid")
 	if userUUIDCtx == nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -28,14 +28,13 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 	userUUID := userUUIDCtx.(string)
 
-	// Fetch user and preload profile for full name
 	var user models.User
 	if err := c.DB.Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Parse input JSON
+	// --- 2. Parse request body ---
 	var input struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -47,13 +46,19 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create cohort
+	// --- 3. Validate fields ---
+	if strings.TrimSpace(input.Name) == "" {
+		c.Json(w, http.StatusBadRequest, "Cohort name is required", nil)
+		return
+	}
+
+	// --- 4. Create new cohort record ---
 	cohort := models.Cohort{
 		Name:        input.Name,
 		Description: input.Description,
 		StartDate:   input.StartDate,
 		EndDate:     input.EndDate,
-		CreatedBy:   user.UserUUID, // store UUID internally
+		CreatedBy:   user.UserUUID,
 	}
 
 	if err := c.DB.Create(&cohort).Error; err != nil {
@@ -61,20 +66,37 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional: notification for creator
-	_ = c.CreateNotification(user.UserID, "New Cohort Created", "Cohort "+input.Name+" has been added.")
+	// --- 5. Notify & track creation ---
+	c.NotifyAndTrack(
+		user.UserID,
+		"Cohort Created",
+		fmt.Sprintf("Cohort '%s' has been successfully created.", cohort.Name),
+		"Cohort Creation",
+		"Cohort",
+		&cohort.CohortID,
+		"Created",
+	)
 
-	// Optional: audit log
-	_ = c.LogAudit(user.UserID, "create", func() *string { s := "cohort"; return &s }(), &cohort.CohortID, nil, map[string]interface{}{
-		"name": input.Name,
+	// --- 6. Audit trail (SystemHistory entry) ---
+	c.DB.Create(&models.SystemHistory{
+		EntityType: "Cohort",
+		EntityID:   &cohort.CohortID,
+		Action:     "Created",
+		Status:     func() *string { s := "Active"; return &s }(),
+		Comment: func() *string {
+			s := fmt.Sprintf("Cohort '%s' created by %s %s", input.Name, user.Profile.FirstName, user.Profile.LastName)
+			return &s
+		}(),
+		ChangedByID: user.UserID,
+		CreatedAt:   time.Now(),
 	})
 
-	// Optional: job log (e.g., reminders)
+	// --- 7. Optional background job (reminders, deadlines, etc.) ---
 	job, _ := c.StartJob("cohort_reminder_setup", map[string]interface{}{"cohort_id": cohort.CohortID})
 	msg := "Reminder job scheduled"
 	_ = c.EndJob(job, "Completed", &msg)
 
-	// Prepare response with full name of creator
+	// --- 8. Build response ---
 	resp := map[string]interface{}{
 		"cohort_id":   cohort.CohortID,
 		"name":        cohort.Name,
@@ -94,10 +116,8 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------
 // ** all users View-list Cohort API **
-// -------------------------------------
-// -------------------------------------
 func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
-	// Get logged-in user
+	// --- 1. Authenticate user ---
 	userUUID, ok := r.Context().Value("user_uuid").(string)
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -112,33 +132,50 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cohorts []models.Cohort
-	query := c.DB.Preload("Creator.Profile").
-		Preload("Users.Profile").
-		Preload("Users.Role").
-		Order("created_at desc")
+	// --- 2. Pagination parameters ---
+	page := 1
+	pageSize := 10
+	if p := r.URL.Query().Get("page"); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	if ps := r.URL.Query().Get("page_size"); ps != "" {
+		if parsed, err := strconv.Atoi(ps); err == nil && parsed > 0 {
+			pageSize = parsed
+		}
+	}
+	offset := (page - 1) * pageSize
 
+	// --- 3. Base query ---
+	var cohorts []models.Cohort
+	query := c.DB.Preload("Users.Profile").Preload("Users.Role").
+		Preload("Creator.Profile").
+		Order("created_at desc").
+		Offset(offset).Limit(pageSize)
+
+	// --- 4. Role-based access ---
 	switch user.Role.Name {
-	case "Student", "Mentor":
-		// Only fetch cohorts the user belongs to
+	case "Supervisor", "Mentor", "Student":
+		roleName := user.Role.Name
 		query = query.Joins("JOIN cohort_users cu ON cu.cohort_cohort_id = cohorts.cohort_id").
-			Where("cu.user_user_id = ?", user.UserID)
-	case "Supervisor", "Admin":
-		// Supervisors and admins can see all cohorts
+			Where("cu.user_user_id = ? AND cu.role = ?", user.UserID, roleName)
+	case "Admin":
+		// Admin can see all cohorts
 	default:
 		c.Json(w, http.StatusForbidden, "Role not allowed", nil)
 		return
 	}
 
+	// --- 5. Execute query ---
 	if err := query.Find(&cohorts).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch cohorts", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Build response
+	// --- 6. Build response ---
 	var result []map[string]interface{}
 	for _, cohort := range cohorts {
-		members := []map[string]interface{}{}
 		supervisors := []map[string]interface{}{}
 		mentors := []map[string]interface{}{}
 		students := []map[string]interface{}{}
@@ -150,8 +187,6 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 				"full_name": fullName,
 				"role":      u.Role.Name,
 			}
-			members = append(members, userInfo)
-
 			switch u.Role.Name {
 			case "Supervisor":
 				supervisors = append(supervisors, userInfo)
@@ -162,24 +197,7 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Ensure creator is included as a supervisor
-		creatorFullName := cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName
-		alreadySupervisor := false
-		for _, sup := range supervisors {
-			if sup["user_id"] == cohort.Creator.UserID {
-				alreadySupervisor = true
-				break
-			}
-		}
-		if !alreadySupervisor {
-			supervisors = append(supervisors, map[string]interface{}{
-				"user_id":   cohort.Creator.UserID,
-				"full_name": creatorFullName,
-				"role":      "Supervisor",
-			})
-		}
-
-		// Fetch approved proposals for students in this cohort
+		// --- Fetch approved proposals for students ---
 		var proposals []models.Proposal
 		studentIDs := []uint64{}
 		for _, s := range students {
@@ -214,27 +232,58 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 			"start_date":  cohort.StartDate,
 			"end_date":    cohort.EndDate,
 			"created_by": map[string]string{
-				"full_name": creatorFullName,
+				"full_name": cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName,
 			},
-			"members":     members,
 			"supervisors": supervisors,
 			"mentors":     mentors,
 			"students":    students,
 			"proposals":   proposalsResp,
 			"created_at":  cohort.CreatedAt,
-			"user_role":   user.Role.Name, // include current user role for frontend action control
+			"user_role":   user.Role.Name,
 		})
 	}
 
-	c.Json(w, http.StatusOK, "Cohorts retrieved successfully", map[string]interface{}{"cohorts": result})
+	// --- 7. Track access ---
+	c.DB.Create(&models.SystemHistory{
+		EntityType:  "Cohort",
+		EntityID:    nil,
+		Action:      "View",
+		Status:      ptrString("Accessed"),
+		Comment:     ptrString(fmt.Sprintf("%s (%s) viewed cohort listings", user.Profile.FirstName+" "+user.Profile.LastName, user.Role.Name)),
+		ChangedByID: user.UserID,
+		CreatedAt:   time.Now(),
+	})
+
+	c.NotifyAndTrack(
+		user.UserID,
+		"Viewed Cohorts",
+		fmt.Sprintf("%s viewed cohort listings", user.Profile.FirstName+" "+user.Profile.LastName),
+		"Access Log",
+		"Cohort",
+		nil,
+		"Viewed",
+	)
+
+	// --- 8. Send response with pagination info ---
+	resp := map[string]interface{}{
+		"page":         page,
+		"page_size":    pageSize,
+		"cohorts":      result,
+		"cohort_count": len(result),
+	}
+
+	c.Json(w, http.StatusOK, "Cohorts retrieved successfully", resp)
 }
 
-//--------------------------------------------
-// ** Supervisor && Admin Delete Cohort API **
-//--------------------------------------------
+func ptrString(s string) *string {
+	return &s
+}
 
+// --------------------------------------------------------------------------
+// ** Admin Delete Cohort API **
+// --------------------------------------------------------------------------
 func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
-	// Parse JSON body
+	// --- Parse request body ---
 	var body struct {
 		CohortIDs []uint64 `json:"cohort_ids"`
 	}
@@ -242,13 +291,12 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-
 	if len(body.CohortIDs) == 0 {
 		c.Json(w, http.StatusBadRequest, "No cohort IDs provided", nil)
 		return
 	}
 
-	// Get logged-in user UUID
+	// --- Get logged-in user ---
 	userUUIDCtx := r.Context().Value("user_uuid")
 	if userUUIDCtx == nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -256,14 +304,13 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 	}
 	userUUID := userUUIDCtx.(string)
 
-	// Fetch logged-in user info for logs/notifications
 	var user models.User
-	if err := c.DB.Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Fetch cohorts to be deleted
+	// --- Fetch cohorts ---
 	var cohorts []models.Cohort
 	if err := c.DB.Where("cohort_id IN ?", body.CohortIDs).Find(&cohorts).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch cohorts", map[string]interface{}{"error": err.Error()})
@@ -274,52 +321,298 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete cohorts
-	if err := c.DB.Where("cohort_id IN ?", body.CohortIDs).Delete(&models.Cohort{}).Error; err != nil {
+	// --- Role-based permission check ---
+	var allowed []uint64
+	for _, cohort := range cohorts {
+		isCreator := cohort.CreatedBy == user.UserUUID
+		isAdmin := strings.EqualFold(user.Role.Name, "Admin")
+
+		if isCreator || isAdmin {
+			allowed = append(allowed, cohort.CohortID)
+		} else {
+			// Track unauthorized attempt
+			_ = c.LogAudit(user.UserID, "unauthorized_delete", func() *string { s := "cohort"; return &s }(), &cohort.CohortID, nil, map[string]interface{}{
+				"name": cohort.Name,
+			})
+			c.DB.Create(&models.SystemHistory{
+				EntityType: "Cohort",
+				EntityID:   &cohort.CohortID,
+				Action:     "Delete Attempt",
+				Status:     func() *string { s := "Denied"; return &s }(),
+				Comment: func() *string {
+					s := fmt.Sprintf("%s (%s) tried to delete cohort '%s' without permission", user.Profile.FirstName, user.Role.Name, cohort.Name)
+					return &s
+				}(),
+				ChangedByID: user.UserID,
+				CreatedAt:   time.Now(),
+			})
+		}
+	}
+
+	if len(allowed) == 0 {
+		c.Json(w, http.StatusForbidden, "You do not have permission to delete any of the selected cohorts", nil)
+		return
+	}
+
+	// --- Delete cohorts ---
+	if err := c.DB.Where("cohort_id IN ?", allowed).Delete(&models.Cohort{}).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to delete cohorts", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Prepare response with creator full names
-	resp := []map[string]interface{}{}
+	// --- Notifications, logs, and job cleanup ---
 	for _, cohort := range cohorts {
-		var creator models.User
-		if err := c.DB.Preload("Profile").Where("user_uuid = ?", cohort.CreatedBy).First(&creator).Error; err != nil {
-			creator.Profile.FirstName = "Unknown"
-			creator.Profile.LastName = ""
+		if !contains(allowed, cohort.CohortID) {
+			continue
 		}
-
-		resp = append(resp, map[string]interface{}{
-			"cohort_id":   cohort.CohortID,
-			"name":        cohort.Name,
-			"description": cohort.Description,
-			"created_by": map[string]string{
-				"first_name": creator.Profile.FirstName,
-				"last_name":  creator.Profile.LastName,
-				"full_name":  creator.Profile.FirstName + " " + creator.Profile.LastName,
-			},
-		})
-	}
-
-	// Notifications & audit log for each deleted cohort
-	for _, cohort := range cohorts {
-		_ = c.CreateNotification(user.UserID, "Cohort Deleted", "Cohort "+cohort.Name+" has been deleted.")
+		_ = c.CreateNotification(user.UserID, "Cohort Deleted", "Cohort "+cohort.Name+" has been permanently deleted.")
 		_ = c.LogAudit(user.UserID, "delete", func() *string { s := "cohort"; return &s }(), &cohort.CohortID, nil, map[string]interface{}{
 			"name": cohort.Name,
 		})
-		// Optional: job cleanup
+		c.DB.Create(&models.SystemHistory{
+			EntityType: "Cohort",
+			EntityID:   &cohort.CohortID,
+			Action:     "Delete",
+			Status:     func() *string { s := "Success"; return &s }(),
+			Comment: func() *string {
+				s := fmt.Sprintf("Cohort '%s' deleted by %s (%s)", cohort.Name, user.Profile.FirstName, user.Role.Name)
+				return &s
+			}(),
+			ChangedByID: user.UserID,
+			CreatedAt:   time.Now(),
+		})
+
 		job, _ := c.StartJob("cohort_delete_cleanup", map[string]interface{}{"cohort_id": cohort.CohortID})
 		msg := "Cleanup job completed"
 		_ = c.EndJob(job, "Completed", &msg)
 	}
 
-	c.Json(w, http.StatusOK, fmt.Sprintf("%d cohort(s) deleted successfully", len(cohorts)), map[string]interface{}{"cohorts": resp})
+	c.Json(w, http.StatusOK, fmt.Sprintf("%d cohort(s) deleted successfully", len(allowed)), map[string]interface{}{"deleted_ids": allowed})
 }
 
-//--------------------------------------------
-//  Update Cohort API **
-//--------------------------------------------
+// helper
+func contains(arr []uint64, id uint64) bool {
+	for _, a := range arr {
+		if a == id {
+			return true
+		}
+	}
+	return false
+}
 
+// ===============::::Cohorts Archiving:::=============:::==============================
+func (c *Construct) ArchiveCohort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CohortIDs []uint64 `json:"cohort_ids"`
+		Action    string   `json:"action"` // optional, e.g., "archive"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.CohortIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "Invalid request: provide cohort_ids", nil)
+		return
+	}
+
+	userUUID, _ := r.Context().Value("user_uuid").(string)
+	var user models.User
+	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	// Fetch all cohorts
+	var cohorts []models.Cohort
+	if err := c.DB.Where("cohort_id IN ?", body.CohortIDs).Find(&cohorts).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Cohorts not found", nil)
+		return
+	}
+
+	if len(cohorts) == 0 {
+		c.Json(w, http.StatusNotFound, "No cohorts found to archive", nil)
+		return
+	}
+
+	for _, cohort := range cohorts {
+		// Only admin can archive (remove creator/supervisor condition if only admin is allowed)
+		if !strings.EqualFold(user.Role.Name, "Admin") {
+			continue // skip cohorts user cannot archive
+		}
+
+		// Update is_archived to true
+		if err := c.DB.Model(&cohort).Update("is_archived", true).Error; err != nil {
+			continue // skip failed ones
+		}
+
+		// Audit & notification
+		c.LogAudit(user.UserID, "archive", ptrString("cohort"), &cohort.CohortID, nil, nil)
+		c.CreateNotification(user.UserID, "Cohort Archived", fmt.Sprintf("Cohort '%s' has been archived.", cohort.Name))
+	}
+
+	c.Json(w, http.StatusOK, "Cohorts archived successfully", map[string]interface{}{"cohort_ids": body.CohortIDs})
+}
+
+// =============~~~~Cohort Restoring~~~~==============~~~~=======================++====
+func (c *Construct) RestoreCohort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CohortIDs []uint64 `json:"cohort_ids"`
+		Action    string   `json:"action"` // optional, e.g., "restore"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.CohortIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "Invalid request: provide cohort_ids", nil)
+		return
+	}
+
+	userUUID, _ := r.Context().Value("user_uuid").(string)
+	var user models.User
+	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	// Fetch all cohorts
+	var cohorts []models.Cohort
+	if err := c.DB.Where("cohort_id IN ?", body.CohortIDs).Find(&cohorts).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Cohorts not found", nil)
+		return
+	}
+
+	if len(cohorts) == 0 {
+		c.Json(w, http.StatusNotFound, "No cohorts found to restore", nil)
+		return
+	}
+
+	for _, cohort := range cohorts {
+		// Update is_archived to false
+		if err := c.DB.Model(&cohort).Update("is_archived", false).Error; err != nil {
+			continue // skip failed ones
+		}
+
+		// Audit & notification
+		c.LogAudit(user.UserID, "restore", ptrString("cohort"), &cohort.CohortID, nil, nil)
+		c.CreateNotification(user.UserID, "Cohort Restored", fmt.Sprintf("Cohort '%s' has been restored.", cohort.Name))
+	}
+
+	c.Json(w, http.StatusOK, "Cohorts restored successfully", map[string]interface{}{"cohort_ids": body.CohortIDs})
+}
+
+//================X student removal from cohorts X==============XX====================
+//=====XX REMOVED XX=======
+
+func (c *Construct) RemoveStudentFromCohort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CohortID  uint64 `json:"cohort_id"`
+		StudentID uint64 `json:"student_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if body.CohortID == 0 || body.StudentID == 0 {
+		c.Json(w, http.StatusBadRequest, "Cohort ID and Student ID are required", nil)
+		return
+	}
+
+	// --- Get logged-in user ---
+	userUUIDCtx := r.Context().Value("user_uuid")
+	if userUUIDCtx == nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+	userUUID := userUUIDCtx.(string)
+
+	var actingUser models.User
+	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&actingUser).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
+	// --- Fetch cohort ---
+	var cohort models.Cohort
+	if err := c.DB.First(&cohort, "cohort_id = ?", body.CohortID).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
+		return
+	}
+
+	// --- Permission check ---
+	isAdmin := strings.EqualFold(actingUser.Role.Name, "Admin")
+	isCreator := cohort.CreatedBy == actingUser.UserUUID
+
+	// Check if acting user is assigned as supervisor in this cohort
+	var cohortUser struct {
+		Role string
+	}
+	_ = c.DB.Raw(`
+		SELECT role FROM cohort_users 
+		WHERE cohort_cohort_id = ? AND user_user_id = ? 
+	`, body.CohortID, actingUser.UserID).Scan(&cohortUser)
+
+	isSupervisor := strings.EqualFold(cohortUser.Role, "Supervisor")
+
+	if !(isAdmin || isCreator || isSupervisor) {
+		c.Json(w, http.StatusForbidden, "You do not have permission to remove students from this cohort", nil)
+		return
+	}
+
+	// --- Verify that target user is a student in this cohort ---
+	var studentRecord struct {
+		Role string
+	}
+	if err := c.DB.Raw(`
+		SELECT role FROM cohort_users 
+		WHERE cohort_cohort_id = ? AND user_user_id = ?
+	`, body.CohortID, body.StudentID).Scan(&studentRecord).Error; err != nil || !strings.EqualFold(studentRecord.Role, "Student") {
+		c.Json(w, http.StatusNotFound, "Student not found in this cohort", nil)
+		return
+	}
+
+	// --- Perform removal ---
+	if err := c.DB.Exec(`
+		DELETE FROM cohort_users 
+		WHERE cohort_cohort_id = ? AND user_user_id = ?
+	`, body.CohortID, body.StudentID).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to remove student", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// --- Fetch student info for logs & notifications ---
+	var student models.User
+	c.DB.Preload("Profile").First(&student, body.StudentID)
+
+	// --- Log removal ---
+	_ = c.LogAudit(actingUser.UserID, "remove_student", func() *string { s := "cohort_user"; return &s }(), &body.CohortID, nil, map[string]interface{}{
+		"removed_student_id":   body.StudentID,
+		"removed_student_name": student.Profile.FirstName + " " + student.Profile.LastName,
+	})
+
+	c.DB.Create(&models.SystemHistory{
+		EntityType: "CohortUser",
+		EntityID:   &body.CohortID,
+		Action:     "Remove Student",
+		Status:     func() *string { s := "Success"; return &s }(),
+		Comment: func() *string {
+			s := fmt.Sprintf("%s (%s) removed %s (%s) from cohort '%s'", actingUser.Profile.FirstName, actingUser.Role.Name, student.Profile.FirstName, student.Profile.LastName, cohort.Name)
+			return &s
+		}(),
+		ChangedByID: actingUser.UserID,
+		CreatedAt:   time.Now(),
+	})
+
+	// --- Notify student ---
+	_ = c.CreateNotification(student.UserID, "Removed from Cohort",
+		fmt.Sprintf("You have been removed from the cohort '%s' by %s (%s).",
+			cohort.Name, actingUser.Profile.FirstName, actingUser.Role.Name))
+
+	c.Json(w, http.StatusOK, fmt.Sprintf("Student '%s %s' removed successfully from cohort '%s'",
+		student.Profile.FirstName, student.Profile.LastName, cohort.Name),
+		nil)
+}
+
+// --------------------------------------------------------------------
+//
+//	Update Cohort API **
+//
+// --------------------------------------------------------------------
 func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	cohortIDStr := vars["cohort_id"]
@@ -329,7 +622,7 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get logged-in user UUID
+	// Get logged-in user
 	userUUIDCtx := r.Context().Value("user_uuid")
 	if userUUIDCtx == nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -337,6 +630,7 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 	userUUID := userUUIDCtx.(string)
 
+	// Decode input
 	var input struct {
 		Name        *string `json:"name,omitempty"`
 		Description *string `json:"description,omitempty"`
@@ -348,58 +642,84 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch logged-in user
+	var user models.User
+	if err := c.DB.Preload("Role").Preload("Profile").
+		Where("user_uuid = ?", userUUID).
+		First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
+	// --- Role validation: only Admin ---
+	if !strings.EqualFold(user.Role.Name, "Admin") {
+		c.Json(w, http.StatusForbidden, "Only admins can update cohorts", nil)
+		return
+	}
+
 	// Fetch cohort
 	var cohort models.Cohort
-	if err := c.DB.First(&cohort, cohortID).Error; err != nil {
+	if err := c.DB.Preload("Users.Role").Preload("Users.Profile").
+		First(&cohort, cohortID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
 		return
 	}
 
-	// Fetch user info
-	var user models.User
-	if err := c.DB.Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Apply updates
-	if input.Name != nil {
+	// --- Track changes ---
+	changes := map[string]interface{}{}
+	if input.Name != nil && cohort.Name != *input.Name {
+		changes["name"] = map[string]string{"old": cohort.Name, "new": *input.Name}
 		cohort.Name = *input.Name
 	}
-	if input.Description != nil {
+	if input.Description != nil && cohort.Description != *input.Description {
+		changes["description"] = map[string]string{"old": cohort.Description, "new": *input.Description}
 		cohort.Description = *input.Description
 	}
-	if input.StartDate != nil {
+	if input.StartDate != nil && cohort.StartDate != *input.StartDate {
+		changes["start_date"] = map[string]string{"old": cohort.StartDate, "new": *input.StartDate}
 		cohort.StartDate = *input.StartDate
 	}
-	if input.EndDate != nil {
+	if input.EndDate != nil && cohort.EndDate != *input.EndDate {
+		changes["end_date"] = map[string]string{"old": cohort.EndDate, "new": *input.EndDate}
 		cohort.EndDate = *input.EndDate
 	}
 
+	if len(changes) == 0 {
+		c.Json(w, http.StatusOK, "No changes made", nil)
+		return
+	}
+
+	// --- Save updates ---
 	if err := c.DB.Save(&cohort).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update cohort", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 🔔 Notification
-	_ = c.CreateNotification(user.UserID, "Cohort Updated", "Cohort "+cohort.Name+" has been updated.")
+	// --- Audit log ---
+	_ = c.LogAudit(user.UserID, "update", ptrString("cohort"), &cohort.CohortID, nil, changes)
 
-	// 📜 Audit log
-	_ = c.LogAudit(user.UserID, "update", func() *string { s := "cohort"; return &s }(), &cohort.CohortID, nil, map[string]interface{}{
-		"name": cohort.Name,
+	// --- System history log ---
+	changeSummary := []string{}
+	for field, vals := range changes {
+		if v, ok := vals.(map[string]string); ok {
+			changeSummary = append(changeSummary, fmt.Sprintf("%s: '%s' → '%s'", field, v["old"], v["new"]))
+		}
+	}
+	comment := fmt.Sprintf("%s (%s) updated cohort '%s' — %s",
+		user.Profile.FirstName, user.Role.Name, cohort.Name, strings.Join(changeSummary, ", "))
+
+	c.DB.Create(&models.SystemHistory{
+		EntityType:  "Cohort",
+		EntityID:    &cohort.CohortID,
+		Action:      "Update",
+		Status:      ptrString("Success"),
+		Comment:     &comment,
+		ChangedByID: user.UserID,
+		CreatedAt:   time.Now(),
 	})
 
-	// ⚙️ Job log
-	job, _ := c.StartJob("cohort_update_notifications", map[string]interface{}{"cohort_id": cohort.CohortID})
-	msg := "Update notification job completed"
-	_ = c.EndJob(job, "Completed", &msg)
-
-	// Return response including creator's name
-	var creator models.User
-	if err := c.DB.Preload("Profile").Where("user_uuid = ?", cohort.CreatedBy).First(&creator).Error; err != nil {
-		creator.Profile.FirstName = "Unknown"
-		creator.Profile.LastName = ""
-	}
+	// --- Notifications ---
+	_ = c.CreateNotification(user.UserID, "Cohort Updated", fmt.Sprintf("Cohort '%s' has been updated.", cohort.Name))
 
 	resp := map[string]interface{}{
 		"cohort_id":   cohort.CohortID,
@@ -407,156 +727,14 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		"description": cohort.Description,
 		"start_date":  cohort.StartDate,
 		"end_date":    cohort.EndDate,
-		"created_by": map[string]string{
-			"first_name": creator.Profile.FirstName,
-			"last_name":  creator.Profile.LastName,
+		"updated_at":  cohort.UpdatedAt,
+		"updated_by": map[string]string{
+			"first_name": user.Profile.FirstName,
+			"last_name":  user.Profile.LastName,
+			"role":       user.Role.Name,
 		},
-		"updated_at": cohort.UpdatedAt,
+		"changes": changes,
 	}
 
 	c.Json(w, http.StatusOK, "Cohort updated successfully", map[string]interface{}{"cohort": resp})
-}
-
-// GetCohortOverview fetches proposals, students, and teams for a single cohort
-func (c *Construct) GetCohortOverview(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	cohortIDStr := vars["cohort_id"]
-	cohortID, err := strconv.ParseUint(cohortIDStr, 10, 64)
-	if err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid cohort ID", nil)
-		return
-	}
-
-	// Get logged-in user UUID
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
-		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
-		return
-	}
-	userUUID := userUUIDCtx.(string)
-
-	// Fetch user and role
-	var user models.User
-	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch user", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	roleName := strings.ToLower(user.Role.Name)
-	if roleName != "supervisor" && roleName != "admin" {
-		c.Json(w, http.StatusForbidden, "Unauthorized", nil)
-		return
-	}
-
-	// --- Fetch cohort info ---
-	var cohort models.Cohort
-	if err := c.DB.Preload("Creator.Profile").First(&cohort, cohortID).Error; err != nil {
-		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
-		return
-	}
-
-	// --- Fetch proposals ---
-	var proposals []models.Proposal
-	if err := c.DB.Preload("SubmittedBy.Profile").
-		Preload("Team.Users.Profile").
-		Preload("Window").
-		Where("cohort_id = ?", cohortID).
-		Find(&proposals).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch proposals", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	proposalsResp := []map[string]interface{}{}
-	for _, p := range proposals {
-		submittedBy := map[string]string{"full_name": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName}
-		teamUsers := []map[string]string{}
-		if p.Team != nil {
-			for _, u := range p.Team.Users {
-				teamUsers = append(teamUsers, map[string]string{
-					"full_name": u.Profile.FirstName + " " + u.Profile.LastName,
-					"username":  u.Username,
-				})
-			}
-		}
-		proposalsResp = append(proposalsResp, map[string]interface{}{
-			"proposal_id":  p.ProposalID,
-			"title":        p.Title,
-			"abstract":     p.Abstract,
-			"status":       p.Status,
-			"archived":     p.Archived,
-			"submitted_by": submittedBy,
-			"team":         teamUsers,
-			"window_title": func() string {
-				if p.Window != nil {
-					return p.Window.Title
-				}
-				return ""
-			}(),
-			"document_url": p.DocumentURL,
-			"created_at":   p.CreatedAt,
-			"updated_at":   p.UpdatedAt,
-		})
-	}
-
-	// --- Fetch students in cohort ---
-	var students []models.User
-	if err := c.DB.Preload("Profile").Where("cohort_id = ? AND role_id = ?", cohortID, 2).Find(&students).Error; err != nil { // 2 = student role
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch students", map[string]interface{}{"error": err.Error()})
-		return
-	}
-	studentsResp := []map[string]interface{}{}
-	for _, s := range students {
-		studentsResp = append(studentsResp, map[string]interface{}{
-			"user_id":   s.UserID,
-			"username":  s.Username,
-			"full_name": s.Profile.FirstName + " " + s.Profile.LastName,
-			"email":     s.Email,
-		})
-	}
-
-	// --- Fetch teams in cohort ---
-	var teams []models.Team
-	if err := c.DB.Preload("Users.Profile").Where("cohort_id = ?", cohortID).Find(&teams).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch teams", map[string]interface{}{"error": err.Error()})
-		return
-	}
-	teamsResp := []map[string]interface{}{}
-	for _, t := range teams {
-		usersResp := []map[string]string{}
-		for _, u := range t.Users {
-			usersResp = append(usersResp, map[string]string{
-				"full_name": u.Profile.FirstName + " " + u.Profile.LastName,
-				"username":  u.Username,
-			})
-		}
-		teamsResp = append(teamsResp, map[string]interface{}{
-			"team_id": t.TeamID,
-			"name":    t.Name,
-			"users":   usersResp,
-		})
-	}
-
-	// --- Build final response ---
-	resp := map[string]interface{}{
-		"cohort": map[string]interface{}{
-			"cohort_id":   cohort.CohortID,
-			"name":        cohort.Name,
-			"description": cohort.Description,
-			"start_date":  cohort.StartDate,
-			"end_date":    cohort.EndDate,
-			"created_by": map[string]string{
-				"full_name": cohort.Creator.Profile.FirstName + " " + cohort.Creator.Profile.LastName,
-			},
-		},
-		"counts": map[string]int{
-			"proposals": len(proposalsResp),
-			"students":  len(studentsResp),
-			"teams":     len(teamsResp),
-		},
-		"proposals": proposalsResp,
-		"students":  studentsResp,
-		"teams":     teamsResp,
-	}
-
-	c.Json(w, http.StatusOK, "Cohort overview fetched successfully", resp)
 }
