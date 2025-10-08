@@ -11,8 +11,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// RoleAuthorization validates JWT, checks allowed roles, and ensures user is active
-func RoleAuthorization(db *gorm.DB, allowedRoles ...string) func(http.Handler) http.Handler {
+// Define a custom type for context keys
+type contextKey string
+
+const userUUIDKey contextKey = "user_uuid"
+
+// RoleAuthorization validates JWT, checks allowed roles, active status, and optional permissions
+func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -23,6 +28,7 @@ func RoleAuthorization(db *gorm.DB, allowedRoles ...string) func(http.Handler) h
 
 			tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
 
+			// Validate JWT
 			claims, err := utils.ValidateJWT(tokenString)
 			if err != nil {
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
@@ -34,36 +40,63 @@ func RoleAuthorization(db *gorm.DB, allowedRoles ...string) func(http.Handler) h
 				return
 			}
 
-			// Fetch user from DB to check active status
+			// Fetch user from DB with permissions
 			var user models.User
-			if err := db.Where("user_uuid = ?", claims.UserUUID).First(&user).Error; err != nil {
+			if err := db.Preload("Role.Permissions").Where("user_uuid = ?", claims.UserUUID).First(&user).Error; err != nil {
 				http.Error(w, "User not found", http.StatusUnauthorized)
 				return
 			}
 
-			// ✅ Check if user is active
+			// Check if user is active
 			if !user.IsActive {
 				http.Error(w, "Account disabled", http.StatusForbidden)
 				return
 			}
 
 			// Check allowed roles
-			allowed := false
+			roleAllowed := false
 			for _, role := range allowedRoles {
-				if strings.EqualFold(claims.Role, role) {
-					allowed = true
+				if strings.EqualFold(user.Role.Name, role) {
+					roleAllowed = true
 					break
 				}
 			}
-			if !allowed {
-				fmt.Printf("Access denied for role: %s\n", claims.Role)
+			if !roleAllowed {
+				fmt.Printf("Access denied for role: %s\n", user.Role.Name)
 				http.Error(w, "Forbidden: You don't have permission", http.StatusForbidden)
 				return
 			}
 
-			// Store UserUUID in context
-			ctx := context.WithValue(r.Context(), "user_uuid", claims.UserUUID)
+			// Check required permissions if provided
+			if len(requiredPermissions) > 0 {
+				hasPermission := false
+				for _, perm := range user.Role.Permissions {
+					for _, req := range requiredPermissions {
+						if strings.EqualFold(perm.Name, req) {
+							hasPermission = true
+							break
+						}
+					}
+					if hasPermission {
+						break
+					}
+				}
+				if !hasPermission {
+					fmt.Printf("Access denied: missing required permission for role %s\n", user.Role.Name)
+					http.Error(w, "Forbidden: missing required permission", http.StatusForbidden)
+					return
+				}
+			}
+
+			// Store UserUUID in context using custom key type
+			ctx := context.WithValue(r.Context(), userUUIDKey, user.UserUUID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// Helper function to retrieve UserUUID from context
+func GetUserUUIDFromContext(ctx context.Context) (string, bool) {
+	uuid, ok := ctx.Value(userUUIDKey).(string)
+	return uuid, ok
 }

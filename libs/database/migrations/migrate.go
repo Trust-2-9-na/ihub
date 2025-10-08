@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"fmt"
 	"log"
 	"strings"
 	"web/libs/database"
@@ -18,6 +19,11 @@ func Migrate() error {
 	// 1️⃣ Roles
 	if err := db.AutoMigrate(&models.Role{}); err != nil {
 		log.Printf("Migration failed for Roles: %v", err)
+		return err
+	}
+	// migarate permisions
+	if err := db.AutoMigrate(&models.Permission{}); err != nil {
+		log.Printf("Migration failed for Permisions: %v", err)
 		return err
 	}
 
@@ -140,22 +146,22 @@ CREATE TABLE IF NOT EXISTS cohort_users (
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user
-	if err := seedAdmin(db); err != nil {
-		log.Printf("Failed to seed admin: %v", err)
+	if err := SeedAll(db); err != nil {
+		log.Printf("Failed to seed all users: %v", err)
 		return err
 	}
 
-	log.Println("Admin user seeded successfully!")
+	log.Println("user seeded successfully!")
 	return nil
 }
 
-// seedRoles ensures base roles exist in the system
 func seedRoles(db *gorm.DB) error {
 	roles := []models.Role{
-		{Name: "Admin", Description: "System administrator"},
-		{Name: "Student", Description: "A learner"},
-		{Name: "Mentor", Description: "An expert"},
-		{Name: "Supervisor", Description: "A supervisor"},
+		{Name: "SystemAdmin", Description: "Full system administrator access — manages entire system"},
+		{Name: "OpsAdmin", Description: "Operational administrator — manages cohorts,proposals, assignments, and supervisors"},
+		{Name: "Supervisor", Description: "Supervises students and reviews proposals"},
+		{Name: "Mentor", Description: "Provides mentorship and technical guidance"},
+		{Name: "Student", Description: "A learner submitting proposals and participating in cohorts"},
 	}
 
 	for _, r := range roles {
@@ -177,44 +183,168 @@ func seedRoles(db *gorm.DB) error {
 		}
 	}
 
-	log.Println("Base roles seeded successfully!")
+	log.Println("✅ Base roles seeded: SystemAdmin, OpsAdmin, Supervisor, Mentor, Student")
 	return nil
 }
 
-// seedAdmin ensures the admin role and a default admin user exist
-func seedAdmin(db *gorm.DB) error {
-	var adminRole models.Role
-	if err := db.Where("LOWER(name) = ?", "admin").First(&adminRole).Error; err != nil {
-		return err
+// -----------------------------
+// Seed Admins
+// -----------------------------
+func seedAdmins(db *gorm.DB) error {
+	// --- System Admin ---
+	var sysAdminRole models.Role
+	if err := db.Where("LOWER(name) = ?", "systemadmin").First(&sysAdminRole).Error; err != nil {
+		return fmt.Errorf("system admin role missing: %w", err)
 	}
 
-	passwordHash, err := utils.HashPassword("Inno@2025")
+	sysPassword, err := utils.HashPassword("Inno@2025")
 	if err != nil {
 		return err
 	}
 
-	admin := models.User{
-		Username:     "infratel-hub",
-		Email:        "infratel@domain.com",
-		PasswordHash: passwordHash,
-		RoleID:       adminRole.RoleID,
+	sysAdmin := models.User{
+		Username:     "system-admin",
+		Email:        "sysadmin@domain.com",
+		PasswordHash: sysPassword,
+		RoleID:       sysAdminRole.RoleID,
 		IsActive:     true,
 	}
 
-	if err := db.Where("email = ?", admin.Email).FirstOrCreate(&admin).Error; err != nil {
+	if err := db.Where("email = ?", sysAdmin.Email).FirstOrCreate(&sysAdmin).Error; err != nil {
 		return err
 	}
 
-	// Create default profile for admin
-	var profile models.UserProfile
-	if err := db.Where("user_id = ?", admin.UserID).FirstOrCreate(&profile, models.UserProfile{
-		UserID:    admin.UserID,
-		FirstName: "Admin",
-		LastName:  "Hub",
+	if err := db.Where("user_id = ?", sysAdmin.UserID).FirstOrCreate(&models.UserProfile{
+		UserID:    sysAdmin.UserID,
+		FirstName: "System",
+		LastName:  "Administrator",
 	}).Error; err != nil {
 		return err
 	}
 
-	log.Println("Admin user and profile ready!")
+	// --- Ops Admin ---
+	var opsAdminRole models.Role
+	if err := db.Where("LOWER(name) = ?", "opsadmin").First(&opsAdminRole).Error; err != nil {
+		return fmt.Errorf("ops admin role missing: %w", err)
+	}
+
+	opsPassword, err := utils.HashPassword("Ops@2025")
+	if err != nil {
+		return err
+	}
+
+	opsAdmin := models.User{
+		Username:     "ops-admin",
+		Email:        "opsadmin@domain.com",
+		PasswordHash: opsPassword,
+		RoleID:       opsAdminRole.RoleID,
+		IsActive:     true,
+	}
+
+	if err := db.Where("email = ?", opsAdmin.Email).FirstOrCreate(&opsAdmin).Error; err != nil {
+		return err
+	}
+
+	if err := db.Where("user_id = ?", opsAdmin.UserID).FirstOrCreate(&models.UserProfile{
+		UserID:    opsAdmin.UserID,
+		FirstName: "Operations",
+		LastName:  "Administrator",
+	}).Error; err != nil {
+		return err
+	}
+
+	log.Println("✅ SystemAdmin and OpsAdmin users seeded successfully!")
+	return nil
+}
+
+// -----------------------------
+// Seed Permissions
+// -----------------------------
+func seedPermissions(db *gorm.DB) error {
+	permissions := []models.Permission{
+		{Name: "manage_system", Description: "Access to all system operations"},
+		{Name: "manage_roles", Description: "Can create, update, delete roles"},
+		{Name: "manage_cohorts", Description: "Can create, update, and delete cohorts"},
+		{Name: "manage_proposals", Description: "can approve, add reviews, view reviews, and view proposals"},
+		{Name: "assign_users", Description: "Can assign users to cohorts"},
+		{Name: "view_reports", Description: "Can view analytics and reports"},
+		{Name: "view_logs", Description: "Can View System Logs"},
+		{Name: "manage_supervisors", Description: "Can manage supervisors"},
+		{Name: "assign_mentors", Description: "Can Assign Mentors to Cohorts"},
+		{Name: "manage_mentors", Description: "Can manage mentors"},
+	}
+
+	for _, p := range permissions {
+		var existing models.Permission
+		err := db.Where("LOWER(name) = ?", strings.ToLower(p.Name)).First(&existing).Error
+		if err == gorm.ErrRecordNotFound {
+			if err := db.Create(&p).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	log.Println("✅ Base permissions seeded successfully!")
+	return nil
+}
+
+// ----------------------------------------------------------------------
+// mapping roles and permissions
+//----------------------------------------------------------------------
+
+func seedRolePermissions(db *gorm.DB) error {
+	// Define which permissions each role should have
+	rolePerms := map[string][]string{
+		"SystemAdmin": {"manage_system", "manage_roles", "view_logs"},
+		"OpsAdmin":    {"manage_cohorts", "manage_proposals", "assign_users", "manage_supervisors", "manage_mentors", "view_logs"},
+		"Supervisor":  {"manage_proposals", "view_reports", "assign_mentors"},
+		"Mentor":      {"view_reports"},
+		"Student":     {},
+	}
+
+	for roleName, perms := range rolePerms {
+		var role models.Role
+		if err := db.Where("LOWER(name) = ?", strings.ToLower(roleName)).First(&role).Error; err != nil {
+			return fmt.Errorf("role %s not found: %w", roleName, err)
+		}
+
+		for _, permName := range perms {
+			var perm models.Permission
+			if err := db.Where("LOWER(name) = ?", strings.ToLower(permName)).First(&perm).Error; err != nil {
+				return fmt.Errorf("permission %s not found: %w", permName, err)
+			}
+
+			// Associate permission with role if not already assigned
+			if err := db.Model(&role).Association("Permissions").Append(&perm); err != nil {
+				return fmt.Errorf("failed to assign permission %s to role %s: %w", permName, roleName, err)
+			}
+		}
+	}
+
+	log.Println("🔗 Role-permission mappings seeded successfully!")
+	return nil
+}
+
+// -----------------------------
+// Seed All
+// -----------------------------
+func SeedAll(db *gorm.DB) error {
+
+	if err := seedAdmins(db); err != nil {
+		return err
+	}
+	if err := seedPermissions(db); err != nil {
+		log.Fatalf("Failed to seed permissions: %v", err)
+	}
+
+	if err := seedRoles(db); err != nil {
+		log.Fatalf("Failed to seed roles: %v", err)
+	}
+
+	if err := seedRolePermissions(db); err != nil {
+		log.Fatalf("Failed to seed role-permissions: %v", err)
+	}
+
+	log.Println("🎉 All base data seeded successfully!")
 	return nil
 }

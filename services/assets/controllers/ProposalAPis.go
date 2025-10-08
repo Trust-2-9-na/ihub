@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
@@ -100,12 +101,11 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ─── Get User from Context ────────────────────────────────
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-
 	var user models.User
 	if err := c.DB.Preload("Profile").First(&user, "user_uuid = ?", userUUID).Error; err != nil {
 		http.Error(w, "user not found", http.StatusUnauthorized)
@@ -171,15 +171,13 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		&proposal.ProposalID,
 		status,
 	)
-
-	// ─── Notify Supervisors if Submitted ───────────────────────
-	// ─── Notify Admins if Submitted ───────────────────────────────
+	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
 	if payload.Submit {
-		var admins []models.User
-		if err := c.DB.Joins("Role").Where("roles.name = ?", "Admin").Find(&admins).Error; err == nil {
-			for _, admin := range admins {
+		var opsAdmins []models.User
+		if err := c.DB.Joins("Role").Where("roles.name = ?", "OpsAdmin").Find(&opsAdmins).Error; err == nil {
+			for _, ops := range opsAdmins {
 				c.NotifyAndTrack(
-					admin.UserID,
+					ops.UserID,
 					"New Proposal Submitted",
 					fmt.Sprintf("Student %s submitted a proposal: %s", user.Username, proposal.Title),
 					"Notification",
@@ -276,9 +274,9 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ─── Get Current User ──────────────────────────────────────────────────────
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
@@ -336,15 +334,14 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ─── Notify Supervisors if Submitted ───────────────────────────────────────
-	// ─── Notify Admins if Submitted ───────────────────────────────
+	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
 	if payload.Submit != nil && *payload.Submit {
-		var admins []models.User
-		if err := c.DB.Joins("Role").Where("roles.name = ?", "Admin").Find(&admins).Error; err == nil {
-			for _, admin := range admins {
+		var opsAdmins []models.User
+		if err := c.DB.Joins("Role").Where("roles.name = ?", "OpsAdmin").Find(&opsAdmins).Error; err == nil {
+			for _, ops := range opsAdmins {
 				comment := fmt.Sprintf("Student %s resubmitted proposal: %s", user.Username, proposal.Title)
 				c.NotifyAndTrack(
-					admin.UserID,
+					ops.UserID,
 					"Proposal Resubmitted",
 					comment,
 					"Notification",
@@ -383,9 +380,9 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 
 func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	// --- Get logged-in user ---
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
@@ -553,13 +550,11 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 	}
 
 	// --- Get current user ---
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-	userUUID := userUUIDCtx.(string)
-
 	var user models.User
 	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
@@ -675,12 +670,12 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 // =============GET ARCHIVED PROPOSALS ===========================================
 
 func (c *Construct) GetArchivedProposals(w http.ResponseWriter, r *http.Request) {
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
+
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-	userUUID := userUUIDCtx.(string)
 
 	// Fetch the user
 	var user models.User
@@ -771,9 +766,8 @@ func ifNotNilStr[T any](val *T, f func(*T) string) string {
 }
 
 // ─── GET PROPOSALS WITH PAGINATION ─────────────────────────────
-
 func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
-	// --- Pagination ---
+	// --- Pagination setup ---
 	page, limit := 1, 10
 	if p := r.URL.Query().Get("page"); p != "" {
 		if pp, err := strconv.Atoi(p); err == nil && pp > 0 {
@@ -787,54 +781,69 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * limit
 
-	// --- Get logged-in user ---
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	// --- Extract logged-in user from context ---
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	var user models.User
-	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		http.Error(w, "User not found", http.StatusUnauthorized)
+		c.Json(w, http.StatusUnauthorized, "Unauthorized: missing user context", nil)
 		return
 	}
 
-	// --- Base query ---
+	// --- Fetch user + role ---
+	var user models.User
+	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
+	roleName := strings.ToLower(user.Role.Name)
+
+	// --- Base query setup ---
 	query := c.DB.Preload("SubmittedBy.Profile").
 		Preload("Team.Users.Profile").
 		Preload("Window").
 		Preload("Cohort").
 		Where("archived = ?", false).
-		Order("created_at desc")
+		Order("created_at DESC")
 
-	// --- Role-based filtering ---
-	switch user.Role.Name {
-	case "Student":
+	// --- Role-based proposal filtering ---
+	switch roleName {
+	case "student":
+		// Students: only their own proposals
 		query = query.Where("submitted_by_id = ?", user.UserID)
-	case "Supervisor":
-		// Supervisors only see proposals in windows they created AND not draft
-		query = query.Joins("JOIN proposal_submission_windows w ON proposals.window_id = w.window_id").
-			Where("w.created_by_id = ? AND proposals.status != ?", user.UserID, "Draft")
-	default: // Admin
-		// Admin sees all non-draft proposals
-		query = query.Where("status != ?", "Draft")
+
+	case "opsadmin":
+		// OpsAdmin: see all proposals in any status
+		query = query.Where("status IN ?", []string{
+			"Submitted", "NeedsRevision", "Approved", "Rejected", "Pending",
+		})
+
+	case "systemadmin":
+		// SystemAdmin: only approved and rejected proposals
+		query = query.Where("status IN ?", []string{
+			"Approved", "Rejected",
+		})
+
+	default:
+		// Other roles (supervisors, mentors, etc.): forbidden
+		c.Json(w, http.StatusForbidden, "You are not allowed to view proposals", nil)
+		return
 	}
 
-	// --- Count total after filtering ---
+	// --- Count proposals after filters ---
 	var total int64
 	if err := query.Model(&models.Proposal{}).Count(&total).Error; err != nil {
-		http.Error(w, "failed to count proposals", http.StatusInternalServerError)
+		c.Json(w, http.StatusInternalServerError, "Failed to count proposals", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// --- Fetch proposals with pagination ---
+	// --- Fetch paginated proposals ---
 	var proposals []models.Proposal
 	if err := query.Limit(limit).Offset(offset).Find(&proposals).Error; err != nil {
-		http.Error(w, "failed to fetch proposals", http.StatusInternalServerError)
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch proposals", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// --- Build response ---
+	// --- Build response payload ---
 	type ProposalSummary struct {
 		ProposalID  uint64   `json:"proposal_id"`
 		Title       string   `json:"title"`
@@ -851,15 +860,15 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		CreatedAt   string   `json:"created_at"`
 	}
 
-	var resp []ProposalSummary
+	resp := make([]ProposalSummary, 0, len(proposals))
 	for _, p := range proposals {
 		submittedBy := ""
-		if p.SubmittedBy.UserID != 0 {
+		if p.SubmittedBy.Profile.FirstName != "" {
 			submittedBy = p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName
 		}
 
 		windowTitle := ""
-		if p.Window.WindowID != 0 {
+		if p.Window.Title != "" {
 			windowTitle = p.Window.Title
 		}
 
@@ -872,17 +881,17 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		var teamMembers []string
 		if p.Team != nil && p.Team.TeamID != 0 {
 			teamName = p.Team.Name
-			for _, member := range p.Team.Users {
-				fullName := strings.TrimSpace(member.Profile.FirstName + " " + member.Profile.LastName)
-				if fullName != "" {
-					teamMembers = append(teamMembers, fullName)
+			for _, m := range p.Team.Users {
+				name := strings.TrimSpace(m.Profile.FirstName + " " + m.Profile.LastName)
+				if name != "" {
+					teamMembers = append(teamMembers, name)
 				}
 			}
 		}
 
-		documentURL := ""
+		docURL := ""
 		if p.DocumentURL != nil {
-			documentURL = *p.DocumentURL
+			docURL = *p.DocumentURL
 		}
 		subfield := ""
 		if p.Subfield != nil {
@@ -893,9 +902,9 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 			ProposalID:  p.ProposalID,
 			Title:       p.Title,
 			Abstract:    p.Abstract,
-			DocumentURL: documentURL,
-			Subfield:    subfield,
+			DocumentURL: docURL,
 			Category:    p.Category,
+			Subfield:    subfield,
 			Status:      p.Status,
 			SubmittedBy: submittedBy,
 			WindowTitle: windowTitle,
@@ -906,9 +915,8 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// --- Send response ---
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	// --- Return JSON response ---
+	c.Json(w, http.StatusOK, "Proposals fetched successfully", map[string]interface{}{
 		"page":      page,
 		"limit":     limit,
 		"total":     total,
@@ -935,12 +943,12 @@ func (c *Construct) DeleteProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get user_uuid from context
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-	userUUID, ok := userUUIDCtx.(string)
+
 	if !ok {
 		c.Json(w, http.StatusInternalServerError, "Invalid user context", nil)
 		return

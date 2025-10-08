@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
 	"github.com/gorilla/mux"
@@ -13,7 +14,7 @@ import (
 // api to fetch notification
 func (c *Construct) GetNotifications(w http.ResponseWriter, r *http.Request) {
 	// Get the authenticated user UUID from context
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
@@ -56,7 +57,7 @@ func (c *Construct) MarkNotificationRead(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
@@ -81,12 +82,11 @@ func (c *Construct) MarkNotificationRead(w http.ResponseWriter, r *http.Request)
 
 // mark all as read
 func (c *Construct) MarkAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-	userUUID := userUUIDCtx.(string)
 
 	var user models.User
 	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {

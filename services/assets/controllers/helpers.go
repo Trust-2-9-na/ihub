@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"time"
+	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
 	"gorm.io/datatypes"
@@ -67,8 +68,7 @@ func (c *Construct) NotifyAndTrack(
 }
 
 func (c *Construct) GetAuthenticatedUser(r *http.Request) (*models.User, error) {
-	// Try to get user UUID from context (set by JWT/auth middleware)
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		log.Println("[ERROR] No user_uuid found in request context")
 		return nil, fmt.Errorf("unauthorized: no user in context")

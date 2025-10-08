@@ -8,9 +8,17 @@ import (
 )
 
 type Role struct {
-	RoleID      uint   `json:"role_id" gorm:"primaryKey;autoIncrement"`
-	Name        string `json:"name" gorm:"size:50;unique;not null"`
-	Description string `json:"description" gorm:"type:text"`
+	RoleID      uint         `json:"role_id" gorm:"primaryKey;autoIncrement"`
+	Name        string       `json:"name" gorm:"size:50;unique;not null"`
+	Description string       `json:"description" gorm:"type:text"`
+	Permissions []Permission `gorm:"many2many:role_permissions" json:"permissions"`
+}
+
+type Permission struct {
+	PermissionID uint64 `gorm:"primaryKey;autoIncrement" json:"permission_id"`
+	Name         string `gorm:"unique;not null" json:"name"`
+	Description  string `json:"description"`
+	Roles        []Role `gorm:"many2many:role_permissions" json:"roles"`
 }
 
 type User struct {

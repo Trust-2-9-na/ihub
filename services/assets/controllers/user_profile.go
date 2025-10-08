@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"web/services/assets/middlewares"
 	"web/services/assets/models"
 )
 
@@ -29,12 +30,11 @@ type UpdateProfileInput struct {
 
 func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// Get authenticated user UUID from context (set by JWT middleware)
-	userUUIDCtx := r.Context().Value("user_uuid")
-	if userUUIDCtx == nil {
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-	userUUID := userUUIDCtx.(string)
 
 	// Fetch user with related profiles
 	var user models.User
@@ -95,7 +95,7 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 // UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	// Extract UUID from JWT context
-	userUUID, ok := r.Context().Value("user_uuid").(string)
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
