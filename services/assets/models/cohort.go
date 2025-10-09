@@ -30,8 +30,9 @@ type CohortUser struct {
 	UserID   uint64 `gorm:"column:user_user_id;primaryKey" json:"user_id"`
 	Role     string `gorm:"size:50" json:"role,omitempty"` // "Student", "Mentor", "Supervisor"
 
-	Cohort Cohort `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
-	User   User   `gorm:"foreignKey:UserID;references:UserID" json:"user,omitempty"`
+	Cohort    Cohort  `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
+	User      User    `gorm:"foreignKey:UserID;references:UserID" json:"user,omitempty"`
+	CreatedBy *uint64 `gorm:"column:created_by"`
 
 	CreatedAt time.Time      `json:"created_at,omitempty"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`

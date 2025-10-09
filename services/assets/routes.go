@@ -67,9 +67,10 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// Cohort Assignments
 	admin.Handle("/students/remove", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.RemoveStudentFromCohort))).Methods("DELETE")
 	admin.Handle("/assign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.AssignSupervisorToCohort))).Methods("POST")
-	admin.Handle("/reassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.AssignSupervisorToCohort))).Methods("PUT")
+	admin.Handle("/reassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.ReassignSupervisorToCohort))).Methods("PUT")
 	admin.Handle("/unassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.UnassignSupervisorFromCohort))).Methods("DELETE")
-	admin.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
+	admin.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
+	admin.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
 	// Tracking
 	admin.Handle("/tracking/cohorts", middlewares.RoleAuthorization(db, []string{"Supervisor", "Mentor"}, "view_reports")(http.HandlerFunc(c.CohortTrackingHistory))).Methods("GET")
@@ -114,7 +115,11 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/tracking/proposals", middlewares.RoleAuthorization(db, []string{"Supervisor"}, "view_reports")(http.HandlerFunc(c.ProposalTrackingHistory))).Methods("GET")
 
 	// Cohort Mentor Assignments
-	supervisor.Handle("/cohort/{id}/supervisors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
+	supervisor.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
+	supervisor.Handle("/assign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignMentorToCohort))).Methods("POST")
+	supervisor.Handle("/reassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ReassignMentor))).Methods("PUT")
+	supervisor.Handle("/unassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UnassignMentor))).Methods("DELETE")
+	supervisor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
 	// -----------------------------
 	// MENTOR ROUTES
@@ -134,6 +139,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	mentor.Handle("/cohorts", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.GetCohorts))).Methods("GET")
 	mentor.Handle("/tracking/cohorts", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.CohortTrackingHistory))).Methods("GET")
+	mentor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
 	// -----------------------------
 	// STUDENT ROUTES
