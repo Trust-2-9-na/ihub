@@ -295,3 +295,57 @@ func (c *Construct) CohortTrackingHistory(w http.ResponseWriter, r *http.Request
 		"history": resp,
 	})
 }
+
+//======================================================================
+// history retrieval api
+//======================================================================
+
+func (c *Construct) GetSystemHistory(w http.ResponseWriter, r *http.Request) {
+	entityType := r.URL.Query().Get("entity_type")
+	entityIDStr := r.URL.Query().Get("entity_id")
+	action := r.URL.Query().Get("action")
+	status := r.URL.Query().Get("status")
+
+	var entityID *uint64
+	if entityIDStr != "" {
+		id, err := strconv.ParseUint(entityIDStr, 10, 64)
+		if err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid entity_id value", map[string]interface{}{"error": err.Error()})
+			return
+		}
+		entityID = &id
+	}
+
+	// Build base query
+	query := c.DB.Preload("ChangedBy").Model(&models.SystemHistory{})
+
+	if entityType != "" {
+		query = query.Where("entity_type = ?", entityType)
+	}
+	if entityID != nil {
+		query = query.Where("entity_id = ?", *entityID)
+	}
+	if action != "" {
+		query = query.Where("action ILIKE ?", "%"+action+"%")
+	}
+	if status != "" {
+		query = query.Where("status ILIKE ?", "%"+status+"%")
+	}
+
+	// Execute query
+	var histories []models.SystemHistory
+	if err := query.Order("created_at ASC").Find(&histories).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch history", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if len(histories) == 0 {
+		c.Json(w, http.StatusNotFound, "No history records found for given filters", nil)
+		return
+	}
+
+	c.Json(w, http.StatusOK, "System history fetched successfully", map[string]interface{}{
+		"count": len(histories),
+		"data":  histories,
+	})
+}

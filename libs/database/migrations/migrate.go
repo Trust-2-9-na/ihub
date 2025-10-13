@@ -159,6 +159,55 @@ WHERE role = 'Supervisor';
 		log.Printf("Migration failed for system tracking history: %v", err)
 		return err
 	}
+	// 14 migrate Entity Progress
+
+	if err := db.AutoMigrate(&models.ProgressEntity{}); err != nil {
+		log.Printf("Migration failed for entity progress tracking: %v", err)
+		return err
+	}
+
+	// 15 migrate item progress
+
+	if err := db.AutoMigrate(&models.ProgressItem{}); err != nil {
+		log.Printf("Migration failed for item progress tracking: %v", err)
+		return err
+	}
+
+	// 16 migrate reports
+
+	if err := db.AutoMigrate(&models.WeeklyReport{}); err != nil {
+		log.Printf("Migration failed for weekly reports: %v", err)
+		return err
+	}
+	log.Println("WeeklyReport table created successfully")
+
+	// 17 migrate comments on reports
+
+	// 17. Weekly Report Comments
+	err = db.Exec(`
+CREATE TABLE IF NOT EXISTS weekly_report_comments (
+    id BIGSERIAL PRIMARY KEY,
+    report_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    comment TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_weekly_report_comments_report
+        FOREIGN KEY (report_id)
+        REFERENCES weekly_reports(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+    CONSTRAINT fk_weekly_report_comments_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(user_id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
+`).Error
+	if err != nil {
+		log.Fatalf("Migration failed for weekly_report_comments table: %v", err)
+	}
+	log.Println("weekly_report_comments table created successfully")
 
 	log.Println("All migrations ran successfully!")
 
