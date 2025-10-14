@@ -14,4 +14,5 @@ type ProposalSubmissionWindow struct {
 	School      *string   `json:"school,omitempty" gorm:"size:255"`
 	Program     *string   `json:"program,omitempty" gorm:"size:255"`
 	YearOfStudy *string   `json:"year_of_study,omitempty" gorm:"size:50"`
+	IsArchived  bool      `gorm:"default:false" json:"is_archived"` // new field for archiving
 }

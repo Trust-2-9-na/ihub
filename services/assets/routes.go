@@ -86,6 +86,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/tracking/progress/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_cohorts")(http.HandlerFunc(c.UpdateProgressEntity))).Methods("PUT")
 	admin.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_cohorts")(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	admin.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	admin.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ManageProgressEntities))).Methods("DELETE")
+	admin.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
 	// Reviews
 	admin.Handle("/reviews", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.AddReview))).Methods("POST")
@@ -101,8 +103,12 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/proposals/approved", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.GetApprovedProposals))).Methods("GET")
 	admin.Handle("/proposals/rejected", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.GetRejectedProposals))).Methods("GET")
 	admin.Handle("/proposals/archived", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.GetArchivedProposals))).Methods("GET")
+
+	// submission windows
 	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.CreateSubmissionWindow))).Methods("POST")
-	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"}, "manage_proposals")(http.HandlerFunc(c.GetSubmissionWindows))).Methods("GET")
+	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetSubmissionWindows))).Methods("GET")
+	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.UpdateSubmissionWindow))).Methods("GET")
+	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.ManageSubmissionWindows))).Methods("GET")
 
 	// -----------------------------
 	// SUPERVISOR ROUTES
@@ -131,6 +137,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
 	supervisor.Handle("/tracking/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressEntity))).Methods("PUT")
 	supervisor.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
+	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
 	// Cohort Mentor Assignments
 	supervisor.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
@@ -140,7 +147,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
 	// reports
-	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AddReportComment))).Methods("POST")
+	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
 	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageWeeklyReports))).Methods("DELETE")
 
@@ -170,7 +177,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
 	// reports
-	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.AddReportComment))).Methods("POST")
+	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
 
 	// -----------------------------
@@ -189,7 +196,10 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DeleteNotification))).Methods("DELETE")
 	// cohorts
 	student.Handle("/cohorts", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetCohorts))).Methods("GET")
+	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
+	student.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
 	student.Handle("/proposals", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateProposal))).Methods("POST")
 	student.Handle("/proposals", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetOwnProposals))).Methods("GET")
@@ -208,7 +218,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	//reports
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateWeeklyReport))).Methods("POST")
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateWeeklyReport))).Methods("PUT")
-	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddReportComment))).Methods("POST")
+	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
 
 }
