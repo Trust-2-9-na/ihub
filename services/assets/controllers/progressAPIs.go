@@ -248,7 +248,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	// --- Create item ---
 	item := models.ProgressItem{
-		EntityID:     body.EntityID,
+		EntityID:     &body.EntityID,
 		ParentID:     body.ParentID,
 		PhaseName:    body.PhaseName,
 		ProgressType: body.ProgressType,
@@ -540,8 +540,10 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Full entity recalculation (weights + performance + status) ---
-	if err := c.RecalculateEntityPerformance(item.EntityID); err != nil {
-		fmt.Println("Warning: entity performance recalculation failed:", err)
+	if item.EntityID != nil {
+		if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
+			fmt.Printf("Warning: entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
+		}
 	}
 
 	// --- Notify & Audit ---
@@ -553,7 +555,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 				item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
 			"Assignment",
 			item.Entity.EntityType,
-			&item.EntityID,
+			item.EntityID,
 			item.Status,
 		)
 	}
@@ -565,7 +567,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 			currentUser.Username, item.PhaseName, item.Status),
 		"Update",
 		item.Entity.EntityType,
-		&item.EntityID,
+		item.EntityID,
 		item.Status,
 	)
 
@@ -694,10 +696,14 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
-		// --- Recalculate entity performance/status after each change ---
-		if err := c.RecalculateEntityPerformance(item.EntityID); err != nil {
-			fmt.Println("Warning: entity recalculation failed:", err)
+		if item.EntityID != nil {
+			if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
+				fmt.Println("Warning: entity recalculation failed for EntityID", *item.EntityID, ":", err)
+			}
+		} else {
+			fmt.Println("Warning: item.EntityID is nil, skipping recalculation")
 		}
+
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed on selected progress items successfully", input.Action), nil)

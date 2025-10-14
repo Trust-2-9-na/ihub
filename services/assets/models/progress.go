@@ -55,7 +55,7 @@ type ProgressItem struct {
 	ID       uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
 	CohortID *uint64         `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_id,omitempty"`
 	Cohort   *Cohort         `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
-	EntityID uint64          `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
+	EntityID *uint64         `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
 	Entity   *ProgressEntity `gorm:"foreignKey:EntityID;references:ID" json:"entity,omitempty"`
 
 	ParentID     *uint64    `gorm:"index" json:"parent_id,omitempty"`
@@ -100,6 +100,7 @@ type WeeklyReport struct {
 
 	ReviewedByID *uint64 `gorm:"index" json:"reviewed_by_id,omitempty"`
 	ReviewedBy   *User   `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by,omitempty"`
+	DocumentURL  *string `gorm:"type:text" json:"document_url,omitempty"` // 🔹 File upload URL (PDF, CSV)
 
 	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
@@ -107,7 +108,8 @@ type WeeklyReport struct {
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// Many-to-many relationship
-	ProgressItems []*ProgressItem `gorm:"many2many:weekly_report_progress_items;" json:"progress_items,omitempty"`
+	ProgressItems []*ProgressItem       `gorm:"many2many:weekly_report_progress_items;" json:"progress_items,omitempty"`
+	Comments      []WeeklyReportComment `gorm:"foreignKey:ReportID;references:ID" json:"comments,omitempty"`
 }
 
 // weekly report comments
@@ -119,7 +121,7 @@ type WeeklyReportComment struct {
 	ParentID *uint64       `gorm:"index" json:"parent_id,omitempty"`
 
 	UserID uint64 `gorm:"index;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"user_id"`
-	User   *User  `gorm:"foreignKey:UserID;references:UserID" json:"user,omitempty"`
+	User   *User  `gorm:"-" json:"user,omitempty"`
 
 	Comment   string    `gorm:"type:text" json:"comment"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`

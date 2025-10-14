@@ -3,7 +3,10 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,9 +33,10 @@ func (c *Construct) getAssignCohorts(userID uint64, roleName string) []uint64 {
 	return cohortIDs
 }
 
+// creating reports
+
 func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
-	// 1️⃣ Parse input
-	var input struct {
+	type inputStruct struct {
 		CohortID        uint64    `json:"cohort_id"`
 		WeekStart       time.Time `json:"week_start"`
 		WeekEnd         time.Time `json:"week_end"`
@@ -40,21 +44,113 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		PlannedWork     string    `json:"planned_work"`
 		NextWeek        string    `json:"next_week"`
 		Challenges      string    `json:"challenges"`
-		ProgressItemIDs []uint64  `json:"progress_item_ids"` // multiple linked tasks
+		ProgressItemIDs []uint64  `json:"progress_item_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid request body", nil)
+
+	var input inputStruct
+	var documentURL *string
+
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/json") {
+		// ------------------ JSON ------------------
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
+			return
+		}
+	} else if strings.HasPrefix(contentType, "multipart/form-data") {
+		// ------------------ Multipart ------------------
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Parse fields
+		input.CohortID, _ = strconv.ParseUint(r.FormValue("cohort_id"), 10, 64)
+		input.WorkDone = r.FormValue("work_done")
+		input.PlannedWork = r.FormValue("planned_work")
+		input.NextWeek = r.FormValue("next_week")
+		input.Challenges = r.FormValue("challenges")
+
+		weekStart, err := time.Parse("2006-01-02", r.FormValue("week_start"))
+		if err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid week_start format. Use YYYY-MM-DD.", nil)
+			return
+		}
+		input.WeekStart = weekStart
+
+		weekEnd, err := time.Parse("2006-01-02", r.FormValue("week_end"))
+		if err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid week_end format. Use YYYY-MM-DD.", nil)
+			return
+		}
+		input.WeekEnd = weekEnd
+
+		// Parse progress item IDs (comma-separated)
+		if ids := r.FormValue("progress_item_ids"); ids != "" {
+			for _, idStr := range strings.Split(ids, ",") {
+				if id, err := strconv.ParseUint(strings.TrimSpace(idStr), 10, 64); err == nil {
+					input.ProgressItemIDs = append(input.ProgressItemIDs, id)
+				}
+			}
+		}
+
+		// Handle file upload
+		file, handler, err := r.FormFile("document")
+		if err == nil {
+			defer file.Close()
+
+			// Validate extension
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			ext := strings.ToLower(filepath.Ext(handler.Filename))
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid file type. Only PDF or CSV allowed.", nil)
+				return
+			}
+
+			// Validate MIME type
+			buff := make([]byte, 512)
+			if _, err := file.Read(buff); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", nil)
+				return
+			}
+			file.Seek(0, io.SeekStart)
+			mimeType := http.DetectContentType(buff)
+			if mimeType != "application/pdf" && mimeType != "text/csv" && mimeType != "application/vnd.ms-excel" {
+				c.Json(w, http.StatusBadRequest, fmt.Sprintf("Invalid MIME type: %s. Only PDF or CSV allowed.", mimeType), nil)
+				return
+			}
+
+			// Save file
+			dateDir := time.Now().Format("20060102")
+			uploadDir := filepath.Join("uploads", "reports", dateDir)
+			os.MkdirAll(uploadDir, os.ModePerm)
+
+			filename := fmt.Sprintf("report_%d_%d%s", r.Context().Value("user_id"), time.Now().Unix(), ext)
+			filePath := filepath.Join(uploadDir, filename)
+			dest, err := os.Create(filePath)
+			if err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", nil)
+				return
+			}
+			defer dest.Close()
+			io.Copy(dest, file)
+
+			url := fmt.Sprintf("/%s", filePath)
+			documentURL = &url
+		}
+	} else {
+		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use application/json or multipart/form-data.", nil)
 		return
 	}
 
-	// 2️⃣ Authenticate student
+	// ------------------ Authenticate ------------------
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// 3️⃣ Create the weekly report
+	// ------------------ Create Weekly Report ------------------
 	report := models.WeeklyReport{
 		CohortID:    &input.CohortID,
 		StudentID:   user.UserID,
@@ -65,18 +161,17 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		NextWeek:    input.NextWeek,
 		Challenges:  input.Challenges,
 		Status:      "Pending",
+		DocumentURL: documentURL,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
 
 	if err := c.DB.Create(&report).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to create weekly report", map[string]interface{}{
-			"error": err.Error(),
-		})
+		c.Json(w, http.StatusInternalServerError, "Failed to create weekly report", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 4️⃣ Link multiple progress items if provided
+	// ------------------ Link Progress Items ------------------
 	if len(input.ProgressItemIDs) > 0 {
 		var items []models.ProgressItem
 		c.DB.Where("id IN ?", input.ProgressItemIDs).Find(&items)
@@ -85,19 +180,18 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5️⃣ Notify student about submission
+	// ------------------ Notify & Track ------------------
 	c.NotifyAndTrack(
 		user.UserID,
 		"Weekly Report Submitted",
-		fmt.Sprintf("Your weekly report for week %s - %s has been submitted successfully.",
-			input.WeekStart.Format("02 Jan"), input.WeekEnd.Format("02 Jan")),
+		fmt.Sprintf("Your weekly report for %s - %s has been submitted successfully.", input.WeekStart.Format("02 Jan"), input.WeekEnd.Format("02 Jan")),
 		"Weekly Report Submission",
 		"WeeklyReport",
 		&report.ID,
 		"Pending",
 	)
 
-	// 6️⃣ Notify supervisors of the cohort
+	// Notify supervisors
 	var supervisors []models.User
 	c.DB.Joins("JOIN cohort_supervisors cs ON cs.supervisor_id = users.user_id").
 		Where("cs.cohort_id = ?", input.CohortID).
@@ -107,7 +201,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		c.NotifyAndTrack(
 			sup.UserID,
 			"New Weekly Report Submitted",
-			fmt.Sprintf("A new weekly report from %s is available for viewing.", user.Username),
+			fmt.Sprintf("A new weekly report from %s is available for review.", user.Username),
 			"Weekly Report Review",
 			"WeeklyReport",
 			&report.ID,
@@ -115,7 +209,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// 7️⃣ Return response with linked progress items and empty comments
+	// ------------------ Response ------------------
 	c.Json(w, http.StatusCreated, "Weekly report submitted successfully", map[string]interface{}{
 		"data": map[string]interface{}{
 			"id":             report.ID,
@@ -124,12 +218,12 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			"status":         report.Status,
 			"week_start":     report.WeekStart,
 			"week_end":       report.WeekEnd,
+			"document_url":   report.DocumentURL,
 			"work_done":      report.WorkDone,
 			"planned_work":   report.PlannedWork,
 			"next_week":      report.NextWeek,
 			"challenges":     report.Challenges,
 			"progress_items": input.ProgressItemIDs,
-			"comments":       []interface{}{}, // empty initially
 			"created_at":     report.CreatedAt,
 			"updated_at":     report.UpdatedAt,
 		},
@@ -137,6 +231,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // updating weekly reports
+
 func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	// 1️⃣ Parse report ID from query
 	idStr := r.URL.Query().Get("id")
@@ -150,17 +245,76 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2️⃣ Parse input
+	// 2️⃣ Detect content type and parse input
 	var input struct {
-		WorkDone        *string  `json:"work_done,omitempty"`
-		PlannedWork     *string  `json:"planned_work,omitempty"`
-		NextWeek        *string  `json:"next_week,omitempty"`
-		Challenges      *string  `json:"challenges,omitempty"`
-		ProgressItemIDs []uint64 `json:"progress_item_ids,omitempty"` // multiple linked tasks
-		Comment         *string  `json:"comment,omitempty"`
+		WorkDone        *string  `json:"work_done"`
+		PlannedWork     *string  `json:"planned_work"`
+		NextWeek        *string  `json:"next_week"`
+		Challenges      *string  `json:"challenges"`
+		ProgressItemIDs []uint64 `json:"progress_item_ids"`
+		Comment         *string  `json:"comment"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid input", nil)
+	var documentURL *string
+
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/json") {
+		// JSON request
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", nil)
+			return
+		}
+	} else if strings.HasPrefix(contentType, "multipart/form-data") {
+		// Multipart form (for file + JSON fields)
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Parse JSON from "data" field if provided
+		if data := r.FormValue("data"); data != "" {
+			if err := json.Unmarshal([]byte(data), &input); err != nil {
+				c.Json(w, http.StatusBadRequest, "Invalid JSON in 'data' field", nil)
+				return
+			}
+		}
+
+		// Handle file upload (optional)
+		file, fileHeader, err := r.FormFile("document")
+		if err == nil {
+			defer file.Close()
+			ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+			if ext != ".pdf" && ext != ".csv" {
+				c.Json(w, http.StatusBadRequest, "Invalid file type: only PDF or CSV allowed", nil)
+				return
+			}
+
+			buf := make([]byte, 512)
+			_, _ = file.Read(buf)
+			fileType := http.DetectContentType(buf)
+			file.Seek(0, io.SeekStart)
+
+			if !strings.Contains(fileType, "pdf") && !strings.Contains(fileType, "csv") && !strings.Contains(fileType, "text/plain") {
+				c.Json(w, http.StatusBadRequest, "Invalid file MIME type", nil)
+				return
+			}
+
+			// Save file
+			uploadDir := filepath.Join("uploads", "reports")
+			os.MkdirAll(uploadDir, os.ModePerm)
+			savePath := filepath.Join(uploadDir, fmt.Sprintf("report_%d_%d%s", reportID, time.Now().Unix(), ext))
+			dst, err := os.Create(savePath)
+			if err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to save file", nil)
+				return
+			}
+			defer dst.Close()
+			io.Copy(dst, file)
+
+			url := fmt.Sprintf("/%s", savePath)
+			documentURL = &url
+		}
+	} else {
+		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use JSON or multipart/form-data", nil)
 		return
 	}
 
@@ -171,7 +325,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4️⃣ Fetch the report with linked progress items and comments
+	// 4️⃣ Fetch report
 	var report models.WeeklyReport
 	if err := c.DB.Preload("ProgressItems").Preload("Comments").First(&report, reportID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Report not found", nil)
@@ -186,7 +340,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 
 	updated := false
 
-	// 6️⃣ Only the student can update report fields
+	// 6️⃣ Update student fields
 	if report.StudentID == user.UserID {
 		if input.WorkDone != nil {
 			report.WorkDone = *input.WorkDone
@@ -205,16 +359,22 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			updated = true
 		}
 
-		// 7️⃣ Update linked progress items if provided
+		// Update progress items
 		if len(input.ProgressItemIDs) > 0 {
 			var items []models.ProgressItem
 			c.DB.Where("id IN ?", input.ProgressItemIDs).Find(&items)
 			c.DB.Model(&report).Association("ProgressItems").Replace(items)
 			updated = true
 		}
+
+		// Update uploaded document
+		if documentURL != nil {
+			report.DocumentURL = documentURL
+			updated = true
+		}
 	}
 
-	// 8️⃣ Add a comment if provided (any cohort member)
+	// 7️⃣ Add comment (any cohort member)
 	if input.Comment != nil && *input.Comment != "" {
 		comment := models.WeeklyReportComment{
 			ReportID:  report.ID,
@@ -229,7 +389,6 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 		updated = true
 
-		// Notify the report owner if commenter is not the owner
 		if report.StudentID != user.UserID {
 			c.NotifyAndTrack(
 				report.StudentID,
@@ -243,7 +402,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 9️⃣ Save changes if any
+	// 8️⃣ Save updates
 	if updated {
 		report.UpdatedAt = time.Now()
 		if err := c.DB.Save(&report).Error; err != nil {
@@ -252,7 +411,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	//  🔟 Fetch updated report with linked tasks and comments for response
+	// 9️⃣ Fetch updated report for response
 	if err := c.DB.Preload("ProgressItems").Preload("Comments.User.Profile").Preload("Student").First(&report, report.ID).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch updated report", map[string]interface{}{"error": err.Error()})
 		return
@@ -397,7 +556,11 @@ func (c *Construct) EnforceProgressItems(w http.ResponseWriter, r *http.Request)
 		c.DB.Create(&enforcement)
 
 		// Recalculate entity weighted performance
-		c.UpdateEntityWeightedPerformance(item.EntityID)
+		if item.EntityID != nil {
+			c.UpdateEntityWeightedPerformance(*item.EntityID)
+		} else {
+			fmt.Println("Warning: item.EntityID is nil, skipping weighted performance update")
+		}
 
 		// Notify student
 		if item.AssignedToID != nil {
@@ -428,19 +591,31 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reports []models.WeeklyReport
-	query := c.DB.Preload("Comments.User.Profile").
+	query := c.DB.
 		Preload("Student.Profile").
+		Preload("Student.Role").
+		Preload("ReviewedBy.Profile").
+		Preload("Cohort").
 		Preload("LinkedItem.Entity").
 		Order("created_at DESC")
 
-	// Role-based filtering
 	switch user.Role.Name {
 	case "Student":
-		// Only reports created by this student
-		query = query.Where("student_id = ?", user.UserID)
+		// Students see all reports from their cohort(s)
+		var cohortIDs []uint64
+		c.DB.Table("cohort_users").
+			Select("cohort_cohort_id").
+			Where("user_user_id = ? AND role = ?", user.UserID, "Student").
+			Scan(&cohortIDs)
+
+		if len(cohortIDs) == 0 {
+			c.Json(w, http.StatusOK, "No reports available", map[string]interface{}{"data": []models.WeeklyReport{}})
+			return
+		}
+		query = query.Where("cohort_id IN ?", cohortIDs)
 
 	case "Mentor", "Supervisor":
-		// Reports from assigned cohorts
+		// Mentors/Supervisors see reports from assigned cohorts
 		cohortIDs := c.getAssignCohorts(user.UserID, user.Role.Name)
 		if len(cohortIDs) == 0 {
 			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []models.WeeklyReport{}})
@@ -456,18 +631,33 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := query.Find(&reports).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch reports", nil)
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch reports", map[string]interface{}{"error": err.Error()})
 		return
+	}
+
+	// 🔁 Manually hydrate comments with user info
+	for i := range reports {
+		var comments []models.WeeklyReportComment
+		if err := c.DB.Where("report_id = ?", reports[i].ID).Order("created_at ASC").Find(&comments).Error; err == nil {
+			for j := range comments {
+				var commenter models.User
+				if err := c.DB.Select("user_id, username, email").Preload("Profile").
+					Where("user_id = ?", comments[j].UserID).First(&commenter).Error; err == nil {
+					comments[j].User = &commenter
+				}
+			}
+			reports[i].Comments = comments
+		}
 	}
 
 	// 🔔 Track viewing action
 	c.NotifyAndTrack(
 		user.UserID,
 		"Viewed Weekly Reports",
-		fmt.Sprintf("%s viewed weekly reports", user.Username),
+		fmt.Sprintf("%s viewed weekly reports list", user.Username),
 		"Read",
 		"WeeklyReport",
-		nil, // No specific report ID since multiple reports fetched
+		nil,
 		"Viewed",
 	)
 
