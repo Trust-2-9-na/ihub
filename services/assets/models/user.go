@@ -2,6 +2,7 @@
 package models
 
 import (
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -54,6 +55,11 @@ type UserProfile struct {
 	Address   *string `json:"address,omitempty"`
 	Bio       *string `json:"bio,omitempty"`
 	AvatarURL *string `json:"avatar_url,omitempty"`
+}
+
+// FullName returns the full name of the user
+func (p *UserProfile) FullName() string {
+	return fmt.Sprintf("%s %s", p.FirstName, p.LastName)
 }
 
 // Custom response type (not stored in DB)

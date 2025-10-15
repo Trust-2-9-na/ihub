@@ -181,12 +181,6 @@ WHERE role = 'Supervisor';
 	}
 	log.Println("WeeklyReport table created successfully")
 
-	// 17 migrate supervisor enforcements
-	if err := db.AutoMigrate(&models.SupervisorEnforcement{}); err != nil {
-		log.Printf("Migration failed for supervisor Enforcements: %v", err)
-		return err
-	}
-	// 17. Weekly Report Comments
 	err = db.Exec(`
 CREATE TABLE IF NOT EXISTS weekly_report_comments (
     id BIGSERIAL PRIMARY KEY,

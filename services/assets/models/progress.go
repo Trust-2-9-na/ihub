@@ -13,6 +13,11 @@ const (
 	StatusCompleted  = "Completed"
 	StatusArchived   = "Archived"
 )
+const (
+	VerifiedStatusPendingVerification = "Pending Verification"
+	VerifiedStatusVerified            = "Verified"
+	VerifiedStatusRejected            = "Rejected"
+)
 
 // ProgressType options
 const (
@@ -22,10 +27,11 @@ const (
 )
 
 // report status options
+// WeeklyReport status options
 const (
-	StatusReviewed = "Reviewed"
-	StatusActioned = "Actioned"
-	StatusRejected = "Rejected"
+	StatusPendingVerification = "Pending Verification" // default when student submits
+	StatusApproved            = "Approved"             // supervisor approves
+	StatusRejected            = "Rejected"             // supervisor rejects
 )
 
 type ProgressEntity struct {
@@ -52,24 +58,29 @@ type ProgressEntity struct {
 
 // progress items for tracking
 type ProgressItem struct {
-	ID       uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
-	CohortID *uint64         `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_id,omitempty"`
-	Cohort   *Cohort         `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
-	EntityID *uint64         `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
-	Entity   *ProgressEntity `gorm:"foreignKey:EntityID;references:ID" json:"entity,omitempty"`
+	ID           uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
+	CohortID     *uint64         `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_id,omitempty"`
+	Cohort       *Cohort         `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
+	EntityID     *uint64         `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
+	Entity       *ProgressEntity `gorm:"foreignKey:EntityID;references:ID" json:"entity,omitempty"`
+	ParentID     *uint64         `gorm:"index" json:"parent_id,omitempty"`
+	PhaseName    string          `gorm:"size:255;not null" json:"phase_name"`
+	ProgressType string          `gorm:"size:100;default:'Milestone'" json:"progress_type,omitempty"`
 
-	ParentID     *uint64    `gorm:"index" json:"parent_id,omitempty"`
-	PhaseName    string     `gorm:"size:255;not null" json:"phase_name"`
-	ProgressType string     `gorm:"size:100;default:'Milestone'" json:"progress_type,omitempty"`
-	Status       string     `gorm:"size:50;not null;default:'Pending'" json:"status"`
-	Weight       float64    `gorm:"default:0" json:"weight"`
-	Performance  float64    `gorm:"default:0" json:"performance"`
-	DueDate      *time.Time `json:"due_date,omitempty"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	AssignedToID *uint64    `gorm:"index" json:"assigned_to_id,omitempty"`                                  // FK column
-	AssignedTo   *User      `gorm:"foreignKey:AssignedToID;references:UserID" json:"assigned_to,omitempty"` // Relationship
-	CreatedByID  uint64     `gorm:"index;not null" json:"created_by_id"`
-	CreatedBy    *User      `gorm:"foreignKey:CreatedByID;references:UserID" json:"created_by,omitempty"`
+	// 🔹 Dual-status system
+	StudentStatus  string `gorm:"size:50;not null;default:'Pending'" json:"student_status"`               // student's progress state
+	VerifiedStatus string `gorm:"size:50;not null;default:'Pending Verification'" json:"verified_status"` // supervisor's verification
+
+	Weight      float64    `gorm:"default:0" json:"weight"`
+	Performance float64    `gorm:"default:0" json:"performance"`
+	DueDate     *time.Time `json:"due_date,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+
+	AssignedToID *uint64 `gorm:"index" json:"assigned_to_id,omitempty"`
+	AssignedTo   *User   `gorm:"foreignKey:AssignedToID;references:UserID" json:"assigned_to,omitempty"`
+
+	CreatedByID uint64 `gorm:"index;not null" json:"created_by_id"`
+	CreatedBy   *User  `gorm:"foreignKey:CreatedByID;references:UserID" json:"created_by,omitempty"`
 
 	Metadata   *string        `gorm:"type:jsonb" json:"metadata,omitempty"`
 	IsArchived bool           `gorm:"default:false" json:"is_archived"`
@@ -96,7 +107,7 @@ type WeeklyReport struct {
 	PlannedWork string    `gorm:"type:text" json:"planned_work"`
 	NextWeek    string    `gorm:"type:text" json:"next_week"`
 	Challenges  string    `gorm:"type:text" json:"challenges"`
-	Status      string    `gorm:"size:50;default:'Pending'" json:"status"`
+	Status      string    `gorm:"size:50;default:'Pending Verification'" json:"status"`
 
 	ReviewedByID *uint64 `gorm:"index" json:"reviewed_by_id,omitempty"`
 	ReviewedBy   *User   `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by,omitempty"`
@@ -120,29 +131,10 @@ type WeeklyReportComment struct {
 	Report   *WeeklyReport `gorm:"foreignKey:ReportID;references:ID" json:"report,omitempty"`
 	ParentID *uint64       `gorm:"index" json:"parent_id,omitempty"`
 
-	UserID uint64 `gorm:"index;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE" json:"user_id"`
-	User   *User  `gorm:"-" json:"user,omitempty"`
+	UserID uint64 `gorm:"index;not null" json:"user_id"` // FK column
+	User   *User  `gorm:"foreignKey:UserID;references:UserID"`
 
 	Comment   string    `gorm:"type:text" json:"comment"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
-}
-
-// supervisor status enforcements model
-type SupervisorEnforcement struct {
-	ID       uint64        `gorm:"primaryKey;autoIncrement" json:"id"`
-	ReportID uint64        `gorm:"index;not null" json:"report_id"` // the weekly report that triggered the enforcement
-	Report   *WeeklyReport `gorm:"foreignKey:ReportID;references:ID" json:"report,omitempty"`
-
-	ProgressItemID uint64        `gorm:"index;not null" json:"progress_item_id"` // affected item
-	ProgressItem   *ProgressItem `gorm:"foreignKey:ProgressItemID;references:ID" json:"progress_item,omitempty"`
-
-	EnforcedByID uint64 `gorm:"index;not null" json:"enforced_by_id"` // supervisor user ID
-	EnforcedBy   *User  `gorm:"foreignKey:EnforcedByID;references:UserID" json:"enforced_by,omitempty"`
-
-	OldStatus string `gorm:"size:50;not null" json:"old_status"` // previous status of the item
-	NewStatus string `gorm:"size:50;not null" json:"new_status"` // enforced status
-
-	Reason    string    `gorm:"type:text" json:"reason"` // optional explanation
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"web/services/assets/models"
+
+	"github.com/gorilla/mux"
 )
 
 // getAssignCohorts returns cohort IDs assigned to a mentor or supervisor
@@ -33,18 +35,18 @@ func (c *Construct) getAssignCohorts(userID uint64, roleName string) []uint64 {
 	return cohortIDs
 }
 
-// creating reports
+// CreateWeeklyReport allows a student to submit a weekly report
 
 func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	type inputStruct struct {
-		CohortID        uint64    `json:"cohort_id"`
-		WeekStart       time.Time `json:"week_start"`
-		WeekEnd         time.Time `json:"week_end"`
-		WorkDone        string    `json:"work_done"`
-		PlannedWork     string    `json:"planned_work"`
-		NextWeek        string    `json:"next_week"`
-		Challenges      string    `json:"challenges"`
-		ProgressItemIDs []uint64  `json:"progress_item_ids"`
+		CohortID        uint64   `json:"cohort_id"`
+		WeekStartStr    string   `json:"week_start"` // date string YYYY-MM-DD
+		WeekEndStr      string   `json:"week_end"`   // date string YYYY-MM-DD
+		WorkDone        string   `json:"work_done"`
+		PlannedWork     string   `json:"planned_work"`
+		NextWeek        string   `json:"next_week"`
+		Challenges      string   `json:"challenges"`
+		ProgressItemIDs []uint64 `json:"progress_item_ids"`
 	}
 
 	var input inputStruct
@@ -52,38 +54,23 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "application/json") {
-		// ------------------ JSON ------------------
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
 	} else if strings.HasPrefix(contentType, "multipart/form-data") {
-		// ------------------ Multipart ------------------
-		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
-		// Parse fields
 		input.CohortID, _ = strconv.ParseUint(r.FormValue("cohort_id"), 10, 64)
 		input.WorkDone = r.FormValue("work_done")
 		input.PlannedWork = r.FormValue("planned_work")
 		input.NextWeek = r.FormValue("next_week")
 		input.Challenges = r.FormValue("challenges")
-
-		weekStart, err := time.Parse("2006-01-02", r.FormValue("week_start"))
-		if err != nil {
-			c.Json(w, http.StatusBadRequest, "Invalid week_start format. Use YYYY-MM-DD.", nil)
-			return
-		}
-		input.WeekStart = weekStart
-
-		weekEnd, err := time.Parse("2006-01-02", r.FormValue("week_end"))
-		if err != nil {
-			c.Json(w, http.StatusBadRequest, "Invalid week_end format. Use YYYY-MM-DD.", nil)
-			return
-		}
-		input.WeekEnd = weekEnd
+		input.WeekStartStr = r.FormValue("week_start")
+		input.WeekEndStr = r.FormValue("week_end")
 
 		// Parse progress item IDs (comma-separated)
 		if ids := r.FormValue("progress_item_ids"); ids != "" {
@@ -94,12 +81,10 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Handle file upload
+		// Handle optional file upload
 		file, handler, err := r.FormFile("document")
 		if err == nil {
 			defer file.Close()
-
-			// Validate extension
 			allowedExts := map[string]bool{".pdf": true, ".csv": true}
 			ext := strings.ToLower(filepath.Ext(handler.Filename))
 			if !allowedExts[ext] {
@@ -107,7 +92,6 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Validate MIME type
 			buff := make([]byte, 512)
 			if _, err := file.Read(buff); err != nil {
 				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", nil)
@@ -120,7 +104,6 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Save file
 			dateDir := time.Now().Format("20060102")
 			uploadDir := filepath.Join("uploads", "reports", dateDir)
 			os.MkdirAll(uploadDir, os.ModePerm)
@@ -143,24 +126,36 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ------------------ Authenticate ------------------
+	// Authenticate
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// ------------------ Create Weekly Report ------------------
+	// Parse week start/end dates
+	weekStart, err := time.Parse("2006-01-02", input.WeekStartStr)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid week_start format. Use YYYY-MM-DD.", nil)
+		return
+	}
+	weekEnd, err := time.Parse("2006-01-02", input.WeekEndStr)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid week_end format. Use YYYY-MM-DD.", nil)
+		return
+	}
+
+	// Create Weekly Report
 	report := models.WeeklyReport{
 		CohortID:    &input.CohortID,
 		StudentID:   user.UserID,
-		WeekStart:   input.WeekStart,
-		WeekEnd:     input.WeekEnd,
+		WeekStart:   weekStart,
+		WeekEnd:     weekEnd,
 		WorkDone:    input.WorkDone,
 		PlannedWork: input.PlannedWork,
 		NextWeek:    input.NextWeek,
 		Challenges:  input.Challenges,
-		Status:      "Pending",
+		Status:      "Pending Verification",
 		DocumentURL: documentURL,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -171,7 +166,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ------------------ Link Progress Items ------------------
+	// Link Progress Items
 	if len(input.ProgressItemIDs) > 0 {
 		var items []models.ProgressItem
 		c.DB.Where("id IN ?", input.ProgressItemIDs).Find(&items)
@@ -179,17 +174,6 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			c.DB.Model(&report).Association("ProgressItems").Append(items)
 		}
 	}
-
-	// ------------------ Notify & Track ------------------
-	c.NotifyAndTrack(
-		user.UserID,
-		"Weekly Report Submitted",
-		fmt.Sprintf("Your weekly report for %s - %s has been submitted successfully.", input.WeekStart.Format("02 Jan"), input.WeekEnd.Format("02 Jan")),
-		"Weekly Report Submission",
-		"WeeklyReport",
-		&report.ID,
-		"Pending",
-	)
 
 	// Notify supervisors
 	var supervisors []models.User
@@ -205,19 +189,19 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			"Weekly Report Review",
 			"WeeklyReport",
 			&report.ID,
-			"Pending",
+			"Pending Verification",
 		)
 	}
 
-	// ------------------ Response ------------------
+	// Response
 	c.Json(w, http.StatusCreated, "Weekly report submitted successfully", map[string]interface{}{
 		"data": map[string]interface{}{
 			"id":             report.ID,
 			"student_id":     report.StudentID,
 			"cohort_id":      report.CohortID,
 			"status":         report.Status,
-			"week_start":     report.WeekStart,
-			"week_end":       report.WeekEnd,
+			"week_start":     input.WeekStartStr,
+			"week_end":       input.WeekEndStr,
 			"document_url":   report.DocumentURL,
 			"work_done":      report.WorkDone,
 			"planned_work":   report.PlannedWork,
@@ -232,8 +216,9 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 
 // updating weekly reports
 
+// UpdateWeeklyReport allows a student to update their weekly report or any cohort member to add comments
 func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
-	// 1️⃣ Parse report ID from query
+	// 1️⃣ Parse report ID
 	idStr := r.URL.Query().Get("id")
 	if idStr == "" {
 		c.Json(w, http.StatusBadRequest, "Report ID is required", nil)
@@ -245,7 +230,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2️⃣ Detect content type and parse input
+	// 2️⃣ Parse input
 	var input struct {
 		WorkDone        *string  `json:"work_done"`
 		PlannedWork     *string  `json:"planned_work"`
@@ -258,19 +243,15 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "application/json") {
-		// JSON request
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", nil)
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
 	} else if strings.HasPrefix(contentType, "multipart/form-data") {
-		// Multipart form (for file + JSON fields)
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
 			return
 		}
-
-		// Parse JSON from "data" field if provided
 		if data := r.FormValue("data"); data != "" {
 			if err := json.Unmarshal([]byte(data), &input); err != nil {
 				c.Json(w, http.StatusBadRequest, "Invalid JSON in 'data' field", nil)
@@ -278,7 +259,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Handle file upload (optional)
+		// Handle file upload
 		file, fileHeader, err := r.FormFile("document")
 		if err == nil {
 			defer file.Close()
@@ -287,18 +268,14 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 				c.Json(w, http.StatusBadRequest, "Invalid file type: only PDF or CSV allowed", nil)
 				return
 			}
-
 			buf := make([]byte, 512)
 			_, _ = file.Read(buf)
 			fileType := http.DetectContentType(buf)
 			file.Seek(0, io.SeekStart)
-
 			if !strings.Contains(fileType, "pdf") && !strings.Contains(fileType, "csv") && !strings.Contains(fileType, "text/plain") {
 				c.Json(w, http.StatusBadRequest, "Invalid file MIME type", nil)
 				return
 			}
-
-			// Save file
 			uploadDir := filepath.Join("uploads", "reports")
 			os.MkdirAll(uploadDir, os.ModePerm)
 			savePath := filepath.Join(uploadDir, fmt.Sprintf("report_%d_%d%s", reportID, time.Now().Unix(), ext))
@@ -309,7 +286,6 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			}
 			defer dst.Close()
 			io.Copy(dst, file)
-
 			url := fmt.Sprintf("/%s", savePath)
 			documentURL = &url
 		}
@@ -318,7 +294,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3️⃣ Authenticate user
+	// 3️⃣ Authenticate
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -333,14 +309,14 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5️⃣ Check cohort access
-	if !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
+	if report.CohortID == nil || !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
 
 	updated := false
 
-	// 6️⃣ Update student fields
+	// 6️⃣ Student updates
 	if report.StudentID == user.UserID {
 		if input.WorkDone != nil {
 			report.WorkDone = *input.WorkDone
@@ -358,16 +334,12 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			report.Challenges = *input.Challenges
 			updated = true
 		}
-
-		// Update progress items
 		if len(input.ProgressItemIDs) > 0 {
 			var items []models.ProgressItem
 			c.DB.Where("id IN ?", input.ProgressItemIDs).Find(&items)
 			c.DB.Model(&report).Association("ProgressItems").Replace(items)
 			updated = true
 		}
-
-		// Update uploaded document
 		if documentURL != nil {
 			report.DocumentURL = documentURL
 			updated = true
@@ -389,6 +361,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 		updated = true
 
+		// Notify student if commenter is not the owner
 		if report.StudentID != user.UserID {
 			c.NotifyAndTrack(
 				report.StudentID,
@@ -402,7 +375,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 8️⃣ Save updates
+	// 8️⃣ Save report
 	if updated {
 		report.UpdatedAt = time.Now()
 		if err := c.DB.Save(&report).Error; err != nil {
@@ -411,12 +384,13 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 9️⃣ Fetch updated report for response
+	// 9️⃣ Fetch updated report
 	if err := c.DB.Preload("ProgressItems").Preload("Comments.User.Profile").Preload("Student").First(&report, report.ID).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch updated report", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
+	//  🔟 Respond
 	c.Json(w, http.StatusOK, "Weekly report updated successfully", map[string]interface{}{
 		"data": report,
 	})
@@ -498,87 +472,162 @@ func (c *Construct) UserHasCohortAccess(userID, cohortID uint64) bool {
 	return count > 0
 }
 
-// Suopervisors to enforce taks item's status
+// Reports approval or rejection
 
-func (c *Construct) EnforceProgressItems(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		WeeklyReportID uint64   `json:"weekly_report_id"`
-		ItemIDs        []uint64 `json:"item_ids"`
-		NewStatus      string   `json:"new_status"`
-		Reason         string   `json:"reason"`
+// PATCH /weekly-reports/approve?id=123
+func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.Request) {
+	// 1️⃣ Parse report ID from URL vars
+	vars := mux.Vars(r)
+	idStr, ok := vars["id"]
+	if !ok || idStr == "" {
+		c.Json(w, http.StatusBadRequest, "Report ID is required", nil)
+		return
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid request body", nil)
+	reportID, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid report ID", nil)
 		return
 	}
 
+	// 2️⃣ Parse action input
+	var input struct {
+		Action  string `json:"action"`            // "approve" or "reject"
+		Comment string `json:"comment,omitempty"` // optional for rejection
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid JSON payload", nil)
+		return
+	}
+	input.Action = strings.ToLower(input.Action)
+	if input.Action != "approve" && input.Action != "reject" {
+		c.Json(w, http.StatusBadRequest, "Action must be 'approve' or 'reject'", nil)
+		return
+	}
+
+	// 3️⃣ Authenticate supervisor
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
-
-	if strings.ToLower(user.Role.Name) != "supervisor" && strings.ToLower(user.Role.Name) != "opsadmin" {
-		c.Json(w, http.StatusForbidden, "Only supervisors or admins can enforce items", nil)
+	if strings.ToLower(user.Role.Name) != "supervisor" {
+		c.Json(w, http.StatusForbidden, "Only supervisors can approve or reject reports", nil)
 		return
 	}
 
-	var items []models.ProgressItem
-	if err := c.DB.Where("id IN ?", input.ItemIDs).Find(&items).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch items", nil)
+	// 4️⃣ Fetch report with progress items and student
+	var report models.WeeklyReport
+	if err := c.DB.Preload("ProgressItems").Preload("Student.Profile").Preload("Cohort").First(&report, reportID).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Report not found", nil)
 		return
 	}
 
-	if len(items) == 0 {
-		c.Json(w, http.StatusNotFound, "No progress items found", nil)
+	// 5️⃣ Check that supervisor has access to the cohort
+	if !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
+		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
 
-	for _, item := range items {
-		oldStatus := item.Status
-		item.Status = input.NewStatus
-
-		// Update DB
-		c.DB.Save(&item)
-
-		// Create Supervisor Enforcement record
-		enforcement := models.SupervisorEnforcement{
-			ProgressItemID: item.ID,
-			ReportID:       input.WeeklyReportID, // weekly report that triggered the enforcement
-			EnforcedByID:   user.UserID,          // updated field name
-			OldStatus:      oldStatus,
-			NewStatus:      input.NewStatus,
-			Reason:         input.Reason,
-			CreatedAt:      time.Now(),
+	// 6️⃣ Update report status and comments
+	switch input.Action {
+	case "approve":
+		report.Status = "Approved"
+		report.ReviewedByID = &user.UserID
+		for _, item := range report.ProgressItems {
+			item.VerifiedStatus = "Verified"
+			c.DB.Save(item)
 		}
-
-		c.DB.Create(&enforcement)
-
-		// Recalculate entity weighted performance
-		if item.EntityID != nil {
-			c.UpdateEntityWeightedPerformance(*item.EntityID)
-		} else {
-			fmt.Println("Warning: item.EntityID is nil, skipping weighted performance update")
+	case "reject":
+		report.Status = "Rejected"
+		report.ReviewedByID = &user.UserID
+		for _, item := range report.ProgressItems {
+			item.VerifiedStatus = "Pending Verification"
+			c.DB.Save(item)
 		}
+		if input.Comment != "" {
+			comment := models.WeeklyReportComment{
+				ReportID:  report.ID,
+				UserID:    user.UserID,
+				Comment:   input.Comment,
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+			c.DB.Create(&comment)
+		}
+	}
+	// Update report timestamp
+	report.UpdatedAt = time.Now()
+	if err := c.DB.Save(&report).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to update report", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
-		// Notify student
-		if item.AssignedToID != nil {
-			c.NotifyAndTrack(
-				*item.AssignedToID,
-				"Progress Item Status Enforced",
-				fmt.Sprintf("Supervisor enforced status '%s' on '%s' (old: %s)", input.NewStatus, item.PhaseName, oldStatus),
-				"Supervisor Enforcement",
-				"ProgressItem",
-				&item.ID,
-				input.NewStatus,
-			)
+	// Notify student
+	c.NotifyAndTrack(
+		report.StudentID,
+		fmt.Sprintf("Your weekly report has been %s", strings.ToLower(report.Status)),
+		fmt.Sprintf("Supervisor %s %s your weekly report.", user.Username, strings.ToLower(report.Status)),
+		"Weekly Report Review",
+		"WeeklyReport",
+		&report.ID,
+		report.Status,
+	)
+
+	// Build compact progress items
+	progressItems := make([]map[string]interface{}, 0, len(report.ProgressItems))
+	for _, item := range report.ProgressItems {
+		progressItems = append(progressItems, map[string]interface{}{
+			"id":              item.ID,
+			"phase_name":      item.PhaseName,
+			"progress_type":   item.ProgressType,
+			"student_status":  item.StudentStatus,
+			"verified_status": item.VerifiedStatus,
+		})
+	}
+
+	// Build student name safely
+	// Build student name safely
+	studentName := ""
+	if report.Student.Profile.ProfileID != 0 {
+		studentName = report.Student.Profile.FirstName + " " + report.Student.Profile.LastName
+	}
+
+	// Build reviewer info safely
+	var reviewedBy map[string]interface{}
+	if report.ReviewedBy != nil && report.ReviewedBy.Profile.ProfileID != 0 {
+		reviewedBy = map[string]interface{}{
+			"id":         report.ReviewedBy.UserID,
+			"username":   report.ReviewedBy.Username,
+			"first_name": report.ReviewedBy.Profile.FirstName,
+			"last_name":  report.ReviewedBy.Profile.LastName,
 		}
 	}
 
-	c.Json(w, http.StatusOK, "Progress items enforced successfully", map[string]interface{}{
-		"count": len(items),
+	// Build response
+	resp := map[string]interface{}{
+		"id":             report.ID,
+		"cohort_id":      report.CohortID,
+		"cohort_name":    report.Cohort.Name,
+		"student_id":     report.StudentID,
+		"student_name":   studentName,
+		"week_start":     report.WeekStart,
+		"week_end":       report.WeekEnd,
+		"status":         report.Status,
+		"work_done":      report.WorkDone,
+		"planned_work":   report.PlannedWork,
+		"next_week":      report.NextWeek,
+		"challenges":     report.Challenges,
+		"progress_items": progressItems,
+		"reviewed_by":    reviewedBy,
+		"created_at":     report.CreatedAt,
+		"updated_at":     report.UpdatedAt,
+	}
+
+	// Send JSON response
+	c.Json(w, http.StatusOK, fmt.Sprintf("Report %s successfully", strings.ToLower(report.Status)), map[string]interface{}{
+		"data": resp,
 	})
+
 }
 
 // get weekly reports
@@ -590,67 +639,152 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Query Params ---
+	page, limit := 1, 20
+	fmt.Sscan(r.URL.Query().Get("page"), &page)
+	fmt.Sscan(r.URL.Query().Get("limit"), &limit)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	reportStatus := r.URL.Query().Get("status")
+	var weekStart, weekEnd time.Time
+	if ws := r.URL.Query().Get("week_start"); ws != "" {
+		weekStart, _ = time.Parse("2006-01-02", ws)
+	}
+	if we := r.URL.Query().Get("week_end"); we != "" {
+		weekEnd, _ = time.Parse("2006-01-02", we)
+	}
+
 	var reports []models.WeeklyReport
 	query := c.DB.
 		Preload("Student.Profile").
 		Preload("Student.Role").
 		Preload("ReviewedBy.Profile").
 		Preload("Cohort").
-		Preload("LinkedItem.Entity").
+		Preload("ProgressItems.Entity").
+		Preload("Comments.User.Profile").
 		Order("created_at DESC")
 
-	switch user.Role.Name {
-	case "Student":
-		// Students see all reports from their cohort(s)
-		var cohortIDs []uint64
-		c.DB.Table("cohort_users").
-			Select("cohort_cohort_id").
-			Where("user_user_id = ? AND role = ?", user.UserID, "Student").
-			Scan(&cohortIDs)
+	role := strings.ToLower(user.Role.Name)
+	switch role {
+	case "student":
+		query = query.Where("student_id = ?", user.UserID)
 
+	case "supervisor", "mentor":
+		cohortIDs := c.getAssignedCohorts(user.UserID, strings.Title(role))
 		if len(cohortIDs) == 0 {
-			c.Json(w, http.StatusOK, "No reports available", map[string]interface{}{"data": []models.WeeklyReport{}})
+			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []interface{}{}})
 			return
 		}
 		query = query.Where("cohort_id IN ?", cohortIDs)
 
-	case "Mentor", "Supervisor":
-		// Mentors/Supervisors see reports from assigned cohorts
-		cohortIDs := c.getAssignCohorts(user.UserID, user.Role.Name)
-		if len(cohortIDs) == 0 {
-			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []models.WeeklyReport{}})
-			return
-		}
-		query = query.Where("cohort_id IN ?", cohortIDs)
-
-	case "OpsAdmin", "SystemAdmin":
-		// Admins see all reports
 	default:
 		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
 		return
 	}
 
-	if err := query.Find(&reports).Error; err != nil {
+	// Apply optional filters
+	if reportStatus != "" {
+		query = query.Where("status = ?", reportStatus)
+	}
+	if !weekStart.IsZero() {
+		query = query.Where("week_start >= ?", weekStart)
+	}
+	if !weekEnd.IsZero() {
+		query = query.Where("week_end <= ?", weekEnd)
+	}
+
+	// Fetch total count for pagination
+	var total int64
+	query.Model(&models.WeeklyReport{}).Count(&total)
+
+	if err := query.Limit(limit).Offset(offset).Find(&reports).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch reports", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 🔁 Manually hydrate comments with user info
-	for i := range reports {
-		var comments []models.WeeklyReportComment
-		if err := c.DB.Where("report_id = ?", reports[i].ID).Order("created_at ASC").Find(&comments).Error; err == nil {
-			for j := range comments {
-				var commenter models.User
-				if err := c.DB.Select("user_id, username, email").Preload("Profile").
-					Where("user_id = ?", comments[j].UserID).First(&commenter).Error; err == nil {
-					comments[j].User = &commenter
+	// Build response
+	resp := make([]map[string]interface{}, 0, len(reports))
+	for _, report := range reports {
+		itemsResp := make([]map[string]interface{}, 0, len(report.ProgressItems))
+		for _, item := range report.ProgressItems {
+			itemsResp = append(itemsResp, map[string]interface{}{
+				"id":              item.ID,
+				"phase_name":      item.PhaseName,
+				"student_status":  item.StudentStatus,  // ← replace 'status'
+				"verified_status": item.VerifiedStatus, // supervisor verification
+				"weight":          item.Weight,
+				"performance":     item.Performance,
+				"progress_type":   item.ProgressType,
+				"entity": map[string]interface{}{
+					"id":          item.EntityID,
+					"entity_name": item.Entity.EntityName,
+					"entity_type": item.Entity.EntityType,
+				},
+			})
+		}
+		// add itemsResp to report map here
+		commentsResp := make([]map[string]interface{}, 0, len(report.Comments))
+		for _, cmt := range report.Comments {
+			commenter := map[string]interface{}{}
+			if cmt.User != nil && cmt.User.Profile.ProfileID != 0 {
+				commenter = map[string]interface{}{
+					"id":         cmt.User.UserID,
+					"username":   cmt.User.Username,
+					"first_name": cmt.User.Profile.FirstName,
+					"last_name":  cmt.User.Profile.LastName,
+					"email":      cmt.User.Email,
 				}
 			}
-			reports[i].Comments = comments
+			commentsResp = append(commentsResp, map[string]interface{}{
+				"id":         cmt.ID,
+				"comment":    cmt.Comment,
+				"user":       commenter,
+				"created_at": cmt.CreatedAt,
+				"updated_at": cmt.UpdatedAt,
+			})
 		}
+
+		resp = append(resp, map[string]interface{}{
+			"id":             report.ID,
+			"student_id":     report.StudentID,
+			"student_name":   report.Student.Profile.FullName(),
+			"cohort_id":      report.CohortID,
+			"cohort_name":    report.Cohort.Name,
+			"week_start":     report.WeekStart,
+			"week_end":       report.WeekEnd,
+			"status":         report.Status,
+			"document_url":   report.DocumentURL,
+			"work_done":      report.WorkDone,
+			"planned_work":   report.PlannedWork,
+			"next_week":      report.NextWeek,
+			"challenges":     report.Challenges,
+			"progress_items": itemsResp,
+			"comments":       commentsResp,
+			"reviewed_by": func() map[string]interface{} {
+				if report.ReviewedBy != nil && report.ReviewedBy.Profile.ProfileID != 0 {
+					return map[string]interface{}{
+						"id":         report.ReviewedBy.UserID,
+						"username":   report.ReviewedBy.Username,
+						"first_name": report.ReviewedBy.Profile.FirstName,
+						"last_name":  report.ReviewedBy.Profile.LastName,
+						"email":      report.ReviewedBy.Email,
+					}
+				}
+				return nil
+			}(),
+
+			"created_at": report.CreatedAt,
+			"updated_at": report.UpdatedAt,
+		})
 	}
 
-	// 🔔 Track viewing action
+	// Track action
 	c.NotifyAndTrack(
 		user.UserID,
 		"Viewed Weekly Reports",
@@ -662,7 +796,10 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 	)
 
 	c.Json(w, http.StatusOK, "Weekly reports fetched successfully", map[string]interface{}{
-		"data": reports,
+		"page":  page,
+		"limit": limit,
+		"total": total,
+		"data":  resp,
 	})
 }
 
