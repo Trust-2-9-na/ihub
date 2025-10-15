@@ -9,6 +9,8 @@ import (
 	"time"
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
+
+	"github.com/gorilla/mux"
 )
 
 //============Creating proposal submission window with dynamic filtering ============
@@ -302,8 +304,9 @@ func (c *Construct) UpdateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 	// ---------------------------
 	// Get Window ID from URL
 	// ---------------------------
-	idStr := r.URL.Query().Get("id")
-	if idStr == "" {
+	vars := mux.Vars(r)
+	idStr, ok := vars["id"]
+	if !ok || idStr == "" {
 		c.Json(w, http.StatusBadRequest, "Window ID is required", nil)
 		return
 	}

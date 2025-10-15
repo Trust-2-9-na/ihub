@@ -107,7 +107,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// submission windows
 	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.CreateSubmissionWindow))).Methods("POST")
 	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetSubmissionWindows))).Methods("GET")
-	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.UpdateSubmissionWindow))).Methods("PUT")
+	admin.Handle("/submission-windows/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.UpdateSubmissionWindow))).Methods("PUT")
 	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.ManageSubmissionWindows))).Methods("DELETE")
 
 	// -----------------------------
