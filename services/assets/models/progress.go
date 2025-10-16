@@ -131,10 +131,36 @@ type WeeklyReportComment struct {
 	Report   *WeeklyReport `gorm:"foreignKey:ReportID;references:ID" json:"report,omitempty"`
 	ParentID *uint64       `gorm:"index" json:"parent_id,omitempty"`
 
-	UserID uint64 `gorm:"index;not null" json:"user_id"` // FK column
-	User   *User  `gorm:"foreignKey:UserID;references:UserID"`
+	EditedByID *uint64 `gorm:"index" json:"edited_by_id,omitempty"`
+	EditedBy   *User   `gorm:"foreignKey:EditedByID;references:UserID" json:"edited_by,omitempty"`
 
 	Comment   string    `gorm:"type:text" json:"comment"`
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// mentor feedback
+
+type MentorFeedback struct {
+	ID       uint64 `gorm:"primaryKey;autoIncrement"`
+	MentorID uint64 `gorm:"index;not null"`                                      // who gave the feedback
+	Mentor   User   `gorm:"foreignKey:MentorID;references:UserID" json:"mentor"` // optional: preload mentor info
+
+	ReportID *uint64       `gorm:"index"` // feedback on full report
+	Report   *WeeklyReport `gorm:"foreignKey:ReportID;references:ID" json:"report,omitempty"`
+
+	ItemID *uint64       `gorm:"index"`                                                 // feedback on specific item
+	Item   *ProgressItem `gorm:"foreignKey:ItemID;references:ID" json:"item,omitempty"` // optional: preload item info
+
+	Comment        string   `gorm:"type:text" json:"comment"`
+	Rating         *float64 `json:"rating,omitempty"` // optional score
+	Recommendation string   `gorm:"type:text" json:"recommendation"`
+
+	IsPublic  bool   `gorm:"default:false" json:"is_public"`   // visibility toggle
+	StudentID uint64 `gorm:"index;not null" json:"student_id"` // link to the student being evaluated
+	Student   User   `gorm:"foreignKey:StudentID;references:UserID" json:"student"`
+
+	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"` // soft delete
 }

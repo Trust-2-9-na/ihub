@@ -181,30 +181,12 @@ WHERE role = 'Supervisor';
 	}
 	log.Println("WeeklyReport table created successfully")
 
-	err = db.Exec(`
-CREATE TABLE IF NOT EXISTS weekly_report_comments (
-    id BIGSERIAL PRIMARY KEY,
-    report_id BIGINT NOT NULL,
-    user_id BIGINT NOT NULL,
-    comment TEXT,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_weekly_report_comments_report
-        FOREIGN KEY (report_id)
-        REFERENCES weekly_reports(id)
-        ON DELETE CASCADE
-        ON UPDATE CASCADE,
-    CONSTRAINT fk_weekly_report_comments_user
-        FOREIGN KEY (user_id)
-        REFERENCES users(user_id)
-        ON DELETE CASCADE
-        ON UPDATE CASCADE
-);
-`).Error
-	if err != nil {
-		log.Fatalf("Migration failed for weekly_report_comments table: %v", err)
+	//17 migrate weekly comments
+	if err := db.AutoMigrate(&models.WeeklyReportComment{}); err != nil {
+		log.Printf("Migration failed for Weekly Report comments: %v", err)
+		return err
 	}
-	log.Println("weekly_report_comments table created successfully")
+	log.Println("Weekly_report_comment table created successfully")
 
 	log.Println("All migrations ran successfully!")
 

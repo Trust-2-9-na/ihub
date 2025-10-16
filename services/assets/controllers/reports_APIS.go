@@ -349,11 +349,11 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	// 7️⃣ Add comment (any cohort member)
 	if input.Comment != nil && *input.Comment != "" {
 		comment := models.WeeklyReportComment{
-			ReportID:  report.ID,
-			UserID:    user.UserID,
-			Comment:   *input.Comment,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ReportID:   report.ID,
+			EditedByID: &user.UserID,
+			Comment:    *input.Comment,
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
 		}
 		if err := c.DB.Create(&comment).Error; err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to add comment", map[string]interface{}{"error": err.Error()})
@@ -434,10 +434,10 @@ func (c *Construct) AddOrReplyReportComment(w http.ResponseWriter, r *http.Reque
 	}
 
 	comment := models.WeeklyReportComment{
-		ReportID:  report.ID,
-		UserID:    user.UserID,
-		Comment:   input.Comment,
-		CreatedAt: time.Now(),
+		ReportID:   report.ID,
+		EditedByID: &user.UserID,
+		Comment:    input.Comment,
+		CreatedAt:  time.Now(),
 	}
 	if err := c.DB.Create(&comment).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to add comment", map[string]interface{}{"error": err.Error()})
@@ -546,14 +546,15 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		}
 		if input.Comment != "" {
 			comment := models.WeeklyReportComment{
-				ReportID:  report.ID,
-				UserID:    user.UserID,
-				Comment:   input.Comment,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
+				ReportID:   report.ID,
+				EditedByID: &user.UserID,
+				Comment:    input.Comment,
+				CreatedAt:  time.Now(),
+				UpdatedAt:  time.Now(),
 			}
 			c.DB.Create(&comment)
 		}
+
 	}
 	// Update report timestamp
 	report.UpdatedAt = time.Now()
@@ -594,13 +595,15 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 
 	// Build reviewer info safely
 	var reviewedBy map[string]interface{}
-	if report.ReviewedBy != nil && report.ReviewedBy.Profile.ProfileID != 0 {
+	if report.ReviewedByID != nil && report.ReviewedBy.Profile.ProfileID != 0 {
 		reviewedBy = map[string]interface{}{
 			"id":         report.ReviewedBy.UserID,
 			"username":   report.ReviewedBy.Username,
 			"first_name": report.ReviewedBy.Profile.FirstName,
 			"last_name":  report.ReviewedBy.Profile.LastName,
 		}
+	} else {
+		reviewedBy = nil
 	}
 
 	// Build response
@@ -667,7 +670,7 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 		Preload("ReviewedBy.Profile").
 		Preload("Cohort").
 		Preload("ProgressItems.Entity").
-		Preload("Comments.User.Profile").
+		Preload("Comments.EditedBy.Profile").
 		Order("created_at DESC")
 
 	role := strings.ToLower(user.Role.Name)
@@ -730,21 +733,24 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 		}
 		// add itemsResp to report map here
 		commentsResp := make([]map[string]interface{}, 0, len(report.Comments))
+
 		for _, cmt := range report.Comments {
 			commenter := map[string]interface{}{}
-			if cmt.User != nil && cmt.User.Profile.ProfileID != 0 {
+
+			if cmt.EditedBy != nil && cmt.EditedBy.UserID != 0 && cmt.EditedBy.Profile.ProfileID != 0 {
 				commenter = map[string]interface{}{
-					"id":         cmt.User.UserID,
-					"username":   cmt.User.Username,
-					"first_name": cmt.User.Profile.FirstName,
-					"last_name":  cmt.User.Profile.LastName,
-					"email":      cmt.User.Email,
+					"id":         cmt.EditedBy.UserID,
+					"username":   cmt.EditedBy.Username,
+					"first_name": cmt.EditedBy.Profile.FirstName,
+					"last_name":  cmt.EditedBy.Profile.LastName,
+					"email":      cmt.EditedBy.Email,
 				}
 			}
+
 			commentsResp = append(commentsResp, map[string]interface{}{
 				"id":         cmt.ID,
 				"comment":    cmt.Comment,
-				"user":       commenter,
+				"edited_by":  commenter,
 				"created_at": cmt.CreatedAt,
 				"updated_at": cmt.UpdatedAt,
 			})
