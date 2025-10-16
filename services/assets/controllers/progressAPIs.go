@@ -158,6 +158,90 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// GET Cohort Entities
+func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Request) {
+	// --- Authenticate ---
+	user, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	role := strings.ToLower(user.Role.Name)
+
+	// --- Base query ---
+	query := c.DB.Model(&models.ProgressEntity{}).
+		Preload("Cohort").
+		Order("updated_at DESC")
+
+	// --- Role-based filtering ---
+	switch role {
+	case "opsadmin", "systemadmin":
+		// Can view everything — no filter applied
+	case "supervisor", "mentor":
+		// Can only view what they are assigned to
+		query = query.Where("assigned_to_id = ?", user.UserID)
+	default:
+		c.Json(w, http.StatusForbidden, "You do not have permission to view progress entities", nil)
+		return
+	}
+
+	// --- Optional: filter by cohort_id ---
+	if cohortIDStr := r.URL.Query().Get("cohort_id"); cohortIDStr != "" {
+		if cohortID, err := strconv.ParseUint(cohortIDStr, 10, 64); err == nil {
+			query = query.Where("cohort_id = ?", cohortID)
+		}
+	}
+
+	// --- Fetch entities ---
+	var entities []models.ProgressEntity
+	if err := query.Find(&entities).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to retrieve progress entities", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// --- Build clean response ---
+	response := make([]map[string]interface{}, 0, len(entities))
+	for _, e := range entities {
+		resp := map[string]interface{}{
+			"id":            e.ID,
+			"entity_name":   e.EntityName,
+			"entity_type":   e.EntityType,
+			"status":        e.Status,
+			"performance":   e.Performance,
+			"progress_type": e.ProgressType,
+			"cohort_id":     e.CohortID,
+			"assigned_to":   e.AssignedToID,
+			"is_archived":   e.IsArchived,
+			"created_at":    e.CreatedAt,
+			"updated_at":    e.UpdatedAt,
+		}
+
+		if e.Cohort != nil {
+			resp["cohort_name"] = e.Cohort.Name
+			resp["start_date"] = e.Cohort.StartDate
+			resp["end_date"] = e.Cohort.EndDate
+		}
+
+		response = append(response, resp)
+	}
+
+	// --- Audit & respond ---
+	entity := "ProgressEntity"
+	action := fmt.Sprintf("Viewed %d cohort progress entities", len(entities))
+	_ = c.LogAudit(user.UserID, action, &entity, nil, nil, map[string]interface{}{
+		"role":  role,
+		"count": len(entities),
+	})
+
+	c.Json(w, http.StatusOK, "Progress entities retrieved successfully", map[string]interface{}{
+		"count": len(response),
+		"data":  response,
+	})
+}
+
 // =======++++=======================================================”””””=============
 //
 //	Cohort Items  Progress Creating APi
@@ -464,8 +548,8 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	var body struct {
 		PhaseName      *string    `json:"phase_name,omitempty"`
-		Status         *string    `json:"status,omitempty"`          // Student status (used like create)
-		VerifiedStatus *string    `json:"verified_status,omitempty"` // Supervisor/admin status
+		StudentStatus  *string    `json:"student_status,omitempty"`  // Student updates this
+		VerifiedStatus *string    `json:"verified_status,omitempty"` // Supervisor/admin updates this
 		Weight         *float64   `json:"weight,omitempty"`
 		DueDate        *time.Time `json:"due_date,omitempty"`
 		CompletedAt    *time.Time `json:"completed_at,omitempty"`
@@ -480,7 +564,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
-		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		c.Json(w, http.StatusUnauthorized, fmt.Sprintf("%v", err), nil)
 		return
 	}
 
@@ -497,7 +581,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	// --- Permission checks ---
 	switch role {
 	case "opsadmin", "supervisor", "mentor":
-		// Full access
+		// Full access to update anything
 	case "student":
 		if item.CreatedByID != currentUser.UserID && (item.AssignedToID == nil || *item.AssignedToID != currentUser.UserID) {
 			c.Json(w, http.StatusForbidden, "You can only update your own assigned or created items", nil)
@@ -512,14 +596,14 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	if body.PhaseName != nil {
 		item.PhaseName = *body.PhaseName
 	}
-	if body.Status != nil && isStudent {
-		item.StudentStatus = *body.Status
+	if body.StudentStatus != nil {
+		item.StudentStatus = *body.StudentStatus
 	}
 	if body.VerifiedStatus != nil && !isStudent {
 		prevVerified := item.VerifiedStatus
 		item.VerifiedStatus = *body.VerifiedStatus
 
-		// Calculate performance if verified
+		// Calculate performance only if verified
 		if prevVerified != "Verified" && item.VerifiedStatus == "Verified" {
 			item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
 		} else if item.VerifiedStatus != "Verified" {
@@ -543,7 +627,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		item.IsArchived = *body.IsArchived
 	}
 
-	// --- Recalculate performance dynamically ---
+	// --- Always recalc performance if verified ---
 	if item.VerifiedStatus == "Verified" {
 		item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
 	} else {
@@ -590,20 +674,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	// --- Response ---
 	c.Json(w, http.StatusOK, "Progress item updated successfully", map[string]interface{}{
-		"data": map[string]interface{}{
-			"id":              item.ID,
-			"phase_name":      item.PhaseName,
-			"status":          item.StudentStatus, // same as create handler
-			"verified_status": item.VerifiedStatus,
-			"weight":          item.Weight,
-			"performance":     item.Performance,
-			"entity_id":       *item.EntityID,
-			"entity_name":     item.Entity.EntityName,
-			"entity_type":     item.Entity.EntityType,
-			"assigned_to":     item.AssignedToID,
-			"created_by":      currentUser.Username,
-			"progress_type":   item.ProgressType,
-		},
+		"data": item,
 	})
 }
 

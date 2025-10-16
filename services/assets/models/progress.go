@@ -160,7 +160,8 @@ type MentorFeedback struct {
 	StudentID uint64 `gorm:"index;not null" json:"student_id"` // link to the student being evaluated
 	Student   User   `gorm:"foreignKey:StudentID;references:UserID" json:"student"`
 
-	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"` // soft delete
+	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"` // soft delete
+	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 }

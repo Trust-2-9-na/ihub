@@ -188,6 +188,13 @@ WHERE role = 'Supervisor';
 	}
 	log.Println("Weekly_report_comment table created successfully")
 
+	//18 migrate weekly comments
+	if err := db.AutoMigrate(&models.MentorFeedback{}); err != nil {
+		log.Printf("Migration failed for mentor feedback: %v", err)
+		return err
+	}
+	log.Println("mentor feedback table created successfully")
+
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user

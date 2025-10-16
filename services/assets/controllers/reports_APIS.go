@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -515,55 +516,105 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 4️⃣ Fetch report with progress items and student
+	// 4️⃣ Fetch report with student, cohort, and progress items
 	var report models.WeeklyReport
-	if err := c.DB.Preload("ProgressItems").Preload("Student.Profile").Preload("Cohort").First(&report, reportID).Error; err != nil {
+	if err := c.DB.Preload("ProgressItems").
+		Preload("Student.Profile").
+		Preload("Cohort").
+		First(&report, reportID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Report not found", nil)
 		return
 	}
 
-	// 5️⃣ Check that supervisor has access to the cohort
+	// 5️⃣ Check supervisor access to cohort
 	if !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
 
-	// 6️⃣ Update report status and comments
+	// 6️⃣ Update report status and progress items
+	report.ReviewedByID = &user.UserID
+	now := time.Now()
+	report.UpdatedAt = now
+
+	// Update VerifiedStatus and recalc Performance
+	for _, item := range report.ProgressItems {
+		if item == nil {
+			continue
+		}
+
+		// Update VerifiedStatus and recalc Performance
+		// --- Update report status and progress items ---
+		now := time.Now()
+		report.UpdatedAt = now
+		report.ReviewedByID = &user.UserID
+
+		for _, item := range report.ProgressItems {
+			if item == nil {
+				continue
+			}
+
+			switch input.Action {
+			case "approve":
+				item.VerifiedStatus = "Verified"
+
+				// Recalculate item performance based on student status
+				item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
+
+			case "reject":
+				item.VerifiedStatus = "Pending Verification"
+				item.Performance = 0
+			}
+
+			if err := c.DB.Save(item).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to update progress item", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Normalize weights and recalc entity performance
+			if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
+				log.Println("Warning: failed to update entity performance for item", item.ID, err)
+			}
+		}
+
+		// Finally, update report status
+		report.Status = strings.Title(input.Action)
+		if err := c.DB.Save(&report).Error; err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to update report", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+	}
+
 	switch input.Action {
 	case "approve":
 		report.Status = "Approved"
-		report.ReviewedByID = &user.UserID
-		for _, item := range report.ProgressItems {
-			item.VerifiedStatus = "Verified"
-			c.DB.Save(item)
-		}
 	case "reject":
 		report.Status = "Rejected"
-		report.ReviewedByID = &user.UserID
-		for _, item := range report.ProgressItems {
-			item.VerifiedStatus = "Pending Verification"
-			c.DB.Save(item)
-		}
+
+		// Add optional rejection comment
 		if input.Comment != "" {
 			comment := models.WeeklyReportComment{
 				ReportID:   report.ID,
 				EditedByID: &user.UserID,
 				Comment:    input.Comment,
-				CreatedAt:  time.Now(),
-				UpdatedAt:  time.Now(),
+				CreatedAt:  now,
+				UpdatedAt:  now,
 			}
-			c.DB.Create(&comment)
+			if err := c.DB.Create(&comment).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to create comment", map[string]interface{}{"error": err.Error()})
+				return
+			}
 		}
-
 	}
-	// Update report timestamp
-	report.UpdatedAt = time.Now()
+
+	// Save report
 	if err := c.DB.Save(&report).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update report", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Notify student
+	// 7️⃣ Notify student
 	c.NotifyAndTrack(
 		report.StudentID,
 		fmt.Sprintf("Your weekly report has been %s", strings.ToLower(report.Status)),
@@ -574,28 +625,36 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		report.Status,
 	)
 
-	// Build compact progress items
+	// 8️⃣ Build response
 	progressItems := make([]map[string]interface{}, 0, len(report.ProgressItems))
 	for _, item := range report.ProgressItems {
+		entity := map[string]interface{}{}
+		if item.Entity != nil {
+			entity = map[string]interface{}{
+				"id":          item.Entity.ID,
+				"entity_name": item.Entity.EntityName,
+				"entity_type": item.Entity.EntityType,
+			}
+		}
 		progressItems = append(progressItems, map[string]interface{}{
 			"id":              item.ID,
 			"phase_name":      item.PhaseName,
 			"progress_type":   item.ProgressType,
 			"student_status":  item.StudentStatus,
 			"verified_status": item.VerifiedStatus,
+			"weight":          item.Weight,
+			"performance":     item.Performance,
+			"entity":          entity,
 		})
 	}
 
-	// Build student name safely
-	// Build student name safely
 	studentName := ""
 	if report.Student.Profile.ProfileID != 0 {
 		studentName = report.Student.Profile.FirstName + " " + report.Student.Profile.LastName
 	}
 
-	// Build reviewer info safely
-	var reviewedBy map[string]interface{}
-	if report.ReviewedByID != nil && report.ReviewedBy.Profile.ProfileID != 0 {
+	reviewedBy := map[string]interface{}{}
+	if report.ReviewedByID != nil && report.ReviewedBy != nil {
 		reviewedBy = map[string]interface{}{
 			"id":         report.ReviewedBy.UserID,
 			"username":   report.ReviewedBy.Username,
@@ -606,7 +665,6 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		reviewedBy = nil
 	}
 
-	// Build response
 	resp := map[string]interface{}{
 		"id":             report.ID,
 		"cohort_id":      report.CohortID,
@@ -626,11 +684,7 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		"updated_at":     report.UpdatedAt,
 	}
 
-	// Send JSON response
-	c.Json(w, http.StatusOK, fmt.Sprintf("Report %s successfully", strings.ToLower(report.Status)), map[string]interface{}{
-		"data": resp,
-	})
-
+	c.Json(w, http.StatusOK, fmt.Sprintf("Report %s successfully", strings.ToLower(report.Status)), map[string]interface{}{"data": resp})
 }
 
 // get weekly reports
