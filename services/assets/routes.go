@@ -38,7 +38,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Users & Roles
 	admin.Handle("/users", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"})(http.HandlerFunc(c.GetUsers))).Methods("GET")
-	admin.Handle("/students", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.GetStudents))).Methods("GET")
+	admin.Handle("/students", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	admin.Handle("/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_supervisors")(http.HandlerFunc(c.GetSupervisors))).Methods("GET")
 	admin.Handle("/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_mentors")(http.HandlerFunc(c.GetMentors))).Methods("GET")
 	admin.Handle("/users/{uuid}/status", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ToggleUserStatus))).Methods("PATCH")
