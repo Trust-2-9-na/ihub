@@ -82,7 +82,9 @@ func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Requ
 	// Notify & audit via NotifyAndTrack
 	c.NotifyAndTrack(newSupervisor.UserID, "Cohort Assignment",
 		fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortCohortID, "")
+		"Assignment", "Cohort", &body.CohortCohortID, "",
+		true,
+	)
 
 	c.Json(w, http.StatusOK, "Supervisor assigned successfully", map[string]interface{}{
 		"cohort_name": cohort.Name,
@@ -184,12 +186,16 @@ func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Re
 	// --- Notify & track ---
 	c.NotifyAndTrack(newSupervisor.UserID, "Supervisor Reassignment",
 		fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortCohortID, "")
+		"Assignment", "Cohort", &body.CohortCohortID, "",
+		true,
+	)
 
 	if oldSupervisorFullName != "None" {
 		c.NotifyAndTrack(body.OldUserID, "Supervisor Reassignment",
 			fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
-			"Unassignment", "Cohort", &body.CohortCohortID, "")
+			"Unassignment", "Cohort", &body.CohortCohortID, "",
+			true,
+		)
 	}
 
 	// --- Audit metadata ---
@@ -274,7 +280,8 @@ func (c *Construct) UnassignSupervisorFromCohort(w http.ResponseWriter, r *http.
 	// --- Notify, audit, and track system activity ---
 	c.NotifyAndTrack(supervisor.UserID, "Cohort Unassignment",
 		fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
-		"Unassignment", "Cohort", &body.CohortCohortID, "")
+		"Unassignment", "Cohort", &body.CohortCohortID, "",
+		true)
 
 	c.Json(w, http.StatusOK, "Supervisor unassigned successfully", map[string]interface{}{
 		"cohort_id":   cohort.CohortID,
@@ -400,6 +407,7 @@ func (c *Construct) GetCohortSupervisors(w http.ResponseWriter, r *http.Request)
 			"CohortSupervisor",
 			nil,
 			"",
+			false,
 		)
 	}
 }

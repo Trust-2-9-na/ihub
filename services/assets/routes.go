@@ -27,6 +27,10 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	api.HandleFunc("/signup/mentor", c.SignupMentor).Methods("POST")
 	api.HandleFunc("/signup/supervisor", c.SignupSupervisor).Methods("POST")
 
+	// email verification routes
+	api.HandleFunc("/verify-email", c.VerifyEmail).Methods("GET")                     // Clickable link in email
+	api.HandleFunc("/resend-verification", c.ResendVerificationEmail).Methods("POST") // Request new token
+
 	//---------------------------------------------------
 	// ADMIN ROUTES (SystemAdmin + OpsAdmin)
 	// --------------------------------------------------
@@ -41,7 +45,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/students", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	admin.Handle("/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_supervisors")(http.HandlerFunc(c.GetSupervisors))).Methods("GET")
 	admin.Handle("/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_mentors")(http.HandlerFunc(c.GetMentors))).Methods("GET")
-	admin.Handle("/users/{uuid}/status", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ToggleUserStatus))).Methods("PATCH")
+	admin.Handle("/users/status", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ToggleUserStatus))).Methods("PATCH")
 
 	// change user role
 	admin.Handle("/user/{user_id}/roles", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ChangeUserRole))).Methods("PATCH")

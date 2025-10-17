@@ -136,6 +136,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 				"Cohort",
 				proposal.CohortID,
 				"Assigned",
+				true,
 			)
 			_ = c.LogAudit(user.UserID, "assign_student_to_cohort", ptrString("cohort_user"), proposal.CohortID, nil,
 				map[string]interface{}{"student_id": proposal.SubmittedByID, "cohort_name": proposal.Cohort.Name})
@@ -157,6 +158,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 			"Proposal",
 			&proposal.ProposalID,
 			proposal.Status,
+			true,
 		)
 	} else {
 		// --- Supervisors/Mentors: only comment ---
@@ -168,6 +170,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 			"Proposal",
 			&proposal.ProposalID,
 			proposal.Status,
+			true,
 		)
 	}
 
@@ -360,6 +363,7 @@ func (c *Construct) GetReviews(w http.ResponseWriter, r *http.Request) {
 			"Proposal",
 			&p.ProposalID,
 			p.Status,
+			false,
 		)
 	}
 	c.Json(w, http.StatusOK, "Proposal reviews fetched successfully", map[string]interface{}{
@@ -419,6 +423,7 @@ func (c *Construct) GetMyReviews(w http.ResponseWriter, r *http.Request) {
 			"ProposalReview",
 			nil,
 			"",
+			false,
 		)
 	}
 
@@ -610,6 +615,7 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 		"Proposal",
 		&proposal.ProposalID,
 		proposal.Status,
+		true,
 	)
 
 	// --- Step 9: Audit log ---

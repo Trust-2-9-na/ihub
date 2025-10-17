@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 	"web/services/assets/models"
 
@@ -62,14 +63,33 @@ func (c *Construct) EndJob(job *models.JobLog, status string, message *string) e
 	return c.DB.Save(job).Error
 }
 
-// helper function for notifications
-func (c *Construct) CreateNotification(userID uint64, title, message string) error {
+// CreateNotification sends an in-app notification and optional email notification
+func (c *Construct) CreateNotification(userID uint64, title, message string, sendEmail bool) error {
+	// 1️⃣ Save in-app notification
 	notification := models.Notification{
 		UserID:  userID,
 		Title:   title,
 		Message: message,
 	}
-	return c.DB.Create(&notification).Error
-}
 
-//==================Helper Function for History Tracking Model=========
+	if err := c.DB.Create(&notification).Error; err != nil {
+		return err
+	}
+
+	// 2️⃣ Optionally send email
+	if sendEmail {
+		// Fetch user's email
+		var user models.User
+		if err := c.DB.Preload("Profile").First(&user, "user_id = ?", userID).Error; err != nil {
+			return fmt.Errorf("notification saved, but failed to fetch user email: %w", err)
+		}
+
+		// Use your email sender utility
+		err := c.SendEmail(user.Email, title, message)
+		if err != nil {
+			return fmt.Errorf("notification saved, but failed to send email: %w", err)
+		}
+	}
+
+	return nil
+}

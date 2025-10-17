@@ -8,7 +8,6 @@ import (
 	"web/services/assets/models"
 	"web/services/utils"
 
-	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -60,26 +59,42 @@ type SupervisorResponse struct {
 	SupervisorProfile models.SupervisorProfile `json:"supervisor_profile"`
 }
 
+// -------------------- GET USERS --------------------
 func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
-	var users []models.User
+	authUser, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
 
-	if err := c.DB.Preload("Profile").
-		Preload("Role").
-		Preload("StudentProfile").
-		Preload("MentorProfile").
-		Preload("SupervisorProfile").
-		Find(&users).Error; err != nil {
+	// Only SystemAdmin or OpsAdmin allowed
+	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+		c.Json(w, http.StatusForbidden, "Access denied", nil)
+		return
+	}
+
+	var users []models.User
+	query := c.DB.Preload("Profile").Preload("Role").
+		Preload("StudentProfile").Preload("MentorProfile").Preload("SupervisorProfile")
+
+	// OpsAdmin cannot retrieve SystemAdmins
+	if authUser.Role.Name == "OpsAdmin" {
+		query = query.Joins("JOIN roles ON roles.role_id = users.role_id").
+			Where("LOWER(roles.name) IN ?", []string{"student", "mentor", "supervisor"})
+	}
+
+	if err := query.Find(&users).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch users", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Map users to simplified response
 	var response []AdminUserResponse
 	for _, u := range users {
+		fullName := u.Profile.FirstName + " " + u.Profile.LastName
 		item := AdminUserResponse{
 			UserID:   u.UserID,
 			UserUUID: u.UserUUID,
-			Username: u.Username,
+			Username: fullName, // replace username with full name
 			Email:    u.Email,
 			Role:     u.Role.Name,
 			IsActive: u.IsActive,
@@ -92,8 +107,9 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		switch u.RoleID {
-		case 7:
+		// Add role-specific info
+		switch strings.ToLower(u.Role.Name) {
+		case "student":
 			if u.StudentProfile != nil {
 				item.RoleInfo = map[string]interface{}{
 					"school":        u.StudentProfile.School,
@@ -101,7 +117,7 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 					"year_of_study": u.StudentProfile.YearOfStudy,
 				}
 			}
-		case 8:
+		case "mentor":
 			if u.MentorProfile != nil {
 				item.RoleInfo = map[string]interface{}{
 					"department":   u.MentorProfile.Department,
@@ -110,7 +126,7 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 					"years_exp":    u.MentorProfile.YearsExp,
 				}
 			}
-		case 9:
+		case "supervisor":
 			if u.SupervisorProfile != nil {
 				item.RoleInfo = map[string]interface{}{
 					"department":   u.SupervisorProfile.Department,
@@ -124,6 +140,17 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 		response = append(response, item)
 	}
 
+	// Audit retrieval
+	c.NotifyAndTrack(authUser.UserID,
+		"Retrieved Users",
+		fmt.Sprintf("%s retrieved users list", authUser.Profile.FirstName+" "+authUser.Profile.LastName),
+		"Access",
+		"User",
+		nil,
+		"Viewed",
+		false, // set true if you want email notification
+	)
+
 	c.Json(w, http.StatusOK, "Users retrieved successfully", map[string]interface{}{
 		"users": response,
 	})
@@ -131,8 +158,19 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 
 // ================== STUDENTS ==================
 func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
-	var users []models.User
+	authUser, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
 
+	// Only SystemAdmin or OpsAdmin allowed
+	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+		c.Json(w, http.StatusForbidden, "Access denied", nil)
+		return
+	}
+
+	var users []models.User
 	if err := c.DB.Preload("Profile").
 		Preload("StudentProfile").
 		Joins("JOIN roles ON roles.role_id = users.role_id").
@@ -145,12 +183,12 @@ func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
 	var response []StudentResponse
 	for _, u := range users {
 		if u.StudentProfile == nil {
-			continue // skip users without student profile
+			continue
 		}
 		response = append(response, StudentResponse{
 			UserID:         u.UserID,
 			UserUUID:       u.UserUUID,
-			Username:       u.Username,
+			Username:       u.Profile.FirstName + " " + u.Profile.LastName,
 			Email:          u.Email,
 			IsActive:       u.IsActive,
 			Profile:        u.Profile,
@@ -158,13 +196,33 @@ func (c *Construct) GetStudents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	c.NotifyAndTrack(authUser.UserID,
+		"Retrieved Students",
+		fmt.Sprintf("%s retrieved student list", authUser.Profile.FirstName+" "+authUser.Profile.LastName),
+		"Access",
+		"User",
+		nil,
+		"Viewed",
+		false,
+	)
+
 	c.Json(w, http.StatusOK, "Students retrieved successfully", map[string]interface{}{"students": response})
 }
 
 // ================== MENTORS ==================
 func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
-	var users []models.User
+	authUser, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
 
+	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+		c.Json(w, http.StatusForbidden, "Access denied", nil)
+		return
+	}
+
+	var users []models.User
 	if err := c.DB.Preload("Profile").
 		Preload("MentorProfile").
 		Joins("JOIN roles ON roles.role_id = users.role_id").
@@ -177,12 +235,12 @@ func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
 	var response []MentorResponse
 	for _, u := range users {
 		if u.MentorProfile == nil {
-			continue // skip users without mentor profile
+			continue
 		}
 		response = append(response, MentorResponse{
 			UserID:        u.UserID,
 			UserUUID:      u.UserUUID,
-			Username:      u.Username,
+			Username:      u.Profile.FirstName + " " + u.Profile.LastName,
 			Email:         u.Email,
 			IsActive:      u.IsActive,
 			Profile:       u.Profile,
@@ -190,13 +248,33 @@ func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	c.NotifyAndTrack(authUser.UserID,
+		"Retrieved Mentors",
+		fmt.Sprintf("%s retrieved mentor list", authUser.Profile.FirstName+" "+authUser.Profile.LastName),
+		"Access",
+		"User",
+		nil,
+		"Viewed",
+		false,
+	)
+
 	c.Json(w, http.StatusOK, "Mentors retrieved successfully", map[string]interface{}{"mentors": response})
 }
 
 // ================== SUPERVISORS ==================
 func (c *Construct) GetSupervisors(w http.ResponseWriter, r *http.Request) {
-	var users []models.User
+	authUser, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
 
+	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+		c.Json(w, http.StatusForbidden, "Access denied", nil)
+		return
+	}
+
+	var users []models.User
 	if err := c.DB.Preload("Profile").
 		Preload("SupervisorProfile").
 		Joins("JOIN roles ON roles.role_id = users.role_id").
@@ -209,18 +287,28 @@ func (c *Construct) GetSupervisors(w http.ResponseWriter, r *http.Request) {
 	var response []SupervisorResponse
 	for _, u := range users {
 		if u.SupervisorProfile == nil {
-			continue // skip users without supervisor profile
+			continue
 		}
 		response = append(response, SupervisorResponse{
 			UserID:            u.UserID,
 			UserUUID:          u.UserUUID,
-			Username:          u.Username,
+			Username:          u.Profile.FirstName + " " + u.Profile.LastName,
 			Email:             u.Email,
 			IsActive:          u.IsActive,
 			Profile:           u.Profile,
 			SupervisorProfile: *u.SupervisorProfile,
 		})
 	}
+
+	c.NotifyAndTrack(authUser.UserID,
+		"Retrieved Supervisors",
+		fmt.Sprintf("%s retrieved supervisor list", authUser.Profile.FirstName+" "+authUser.Profile.LastName),
+		"Access",
+		"User",
+		nil,
+		"Viewed",
+		false,
+	)
 
 	c.Json(w, http.StatusOK, "Supervisors retrieved successfully", map[string]interface{}{"supervisors": response})
 }
@@ -238,34 +326,54 @@ func (c *Construct) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch user and preload role
+	// Fetch user with profile and role
 	var user models.User
-	if err := c.DB.Preload("Role").Where("email = ?", input.Email).First(&user).Error; err != nil {
+	if err := c.DB.Preload("Profile").Preload("Role").Where("email = ?", input.Email).First(&user).Error; err != nil {
+		// Audit failed login
+		c.LogAudit(0, "LOGIN_FAILED", nil, nil, nil, map[string]interface{}{
+			"email":  input.Email,
+			"reason": "user not found",
+		})
+
 		c.Json(w, http.StatusUnauthorized, "Invalid credentials", nil)
 		return
 	}
 
-	// ✅ Block disabled accounts right away
+	// Block disabled accounts
 	if !user.IsActive {
+		c.LogAudit(user.UserID, "LOGIN_FAILED", nil, nil, nil, map[string]interface{}{
+			"full_name": user.Profile.FirstName + " " + user.Profile.LastName,
+			"role":      user.Role.Name,
+			"reason":    "account disabled",
+		})
+
 		c.Json(w, http.StatusForbidden, "Account disabled", nil)
 		return
 	}
 
-	// Check role
-	if user.Role.Name == "" {
-		fmt.Println("⚠️ Role not found for user:", user.Email)
-		c.Json(w, http.StatusInternalServerError, "User role missing", nil)
+	// Block if email not verified
+	if !user.EmailVerified {
+		c.LogAudit(user.UserID, "LOGIN_FAILED", nil, nil, nil, map[string]interface{}{
+			"full_name": user.Profile.FirstName + " " + user.Profile.LastName,
+			"role":      user.Role.Name,
+			"reason":    "email not verified",
+		})
+
+		c.Json(w, http.StatusForbidden, "Email not verified. Please verify your email first.", nil)
 		return
 	}
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password)); err != nil {
+		c.LogAudit(user.UserID, "LOGIN_FAILED", nil, nil, nil, map[string]interface{}{
+			"full_name": user.Profile.FirstName + " " + user.Profile.LastName,
+			"role":      user.Role.Name,
+			"reason":    "wrong password",
+		})
+
 		c.Json(w, http.StatusUnauthorized, "Invalid credentials", nil)
 		return
 	}
-
-	// Normalize role for token
-	role := strings.ToLower(user.Role.Name)
 
 	// Generate JWT
 	tokenString, err := utils.GenerateJWT(user.UserUUID, user.Role.Name)
@@ -274,53 +382,139 @@ func (c *Construct) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track login in audit log
+	// Audit login success
 	ip := r.RemoteAddr
-	metadata := map[string]interface{}{
-		"email": user.Email,
-		"role":  user.Role.Name,
-	}
-	if err := c.LogAudit(user.UserID, "LOGIN_SUCCESS", nil, nil, &ip, metadata); err != nil {
-		fmt.Println("⚠️ Failed to log audit:", err)
-	}
+	c.LogAudit(user.UserID, "LOGIN_SUCCESS", nil, nil, &ip, map[string]interface{}{
+		"full_name": user.Profile.FirstName + " " + user.Profile.LastName,
+		"role":      user.Role.Name,
+		"email":     user.Email,
+	})
 
-	// Return success response
+	// Return response
 	c.Json(w, http.StatusOK, "Login successful", map[string]interface{}{
-		"token": tokenString,
-		"role":  role,
+		"token":     tokenString,
+		"role":      strings.ToLower(user.Role.Name),
+		"full_name": user.Profile.FirstName + " " + user.Profile.LastName,
 	})
 }
 
-// -------------------- DELETE USER --------------------
+// -------------------- DELETE USER ----------------------
+
+// ToggleUserStatusInput allows enabling/disabling multiple users
+type ToggleUserStatusInput struct {
+	UserIDs []uint64 `json:"user_ids"`
+	Enable  bool     `json:"enable"` // true = enable, false = disable
+}
+
 func (c *Construct) ToggleUserStatus(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	userUUID := vars["uuid"] // get UUID from URL
-	if userUUID == "" {
-		c.Json(w, http.StatusBadRequest, "Missing user UUID", nil)
+	authUser, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// Find the user by UUID
-	var user models.User
-	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		c.Json(w, http.StatusNotFound, "User not found", map[string]interface{}{"error": err.Error()})
+	var input ToggleUserStatusInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid request", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Toggle IsActive
-	user.IsActive = !user.IsActive
-	status := "disabled"
-	if user.IsActive {
-		status = "enabled"
-	}
-
-	if err := c.DB.Save(&user).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to update user status", map[string]interface{}{"error": err.Error()})
+	if len(input.UserIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "No user IDs provided", nil)
 		return
 	}
 
-	c.Json(w, http.StatusOK, fmt.Sprintf("User %s successfully", status), map[string]interface{}{
-		"user_uuid": user.UserUUID,
-		"is_active": user.IsActive,
+	// Fetch all users
+	var users []models.User
+	if err := c.DB.Preload("Profile").Preload("Role").Where("user_id IN ?", input.UserIDs).Find(&users).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch users", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if len(users) == 0 {
+		c.Json(w, http.StatusNotFound, "No matching users found", nil)
+		return
+	}
+
+	statusText := "disabled"
+	if input.Enable {
+		statusText = "enabled"
+	}
+
+	var updatedUsers []map[string]interface{}
+	var skippedUsers []map[string]interface{}
+
+	for _, user := range users {
+		fullName := user.Profile.FirstName + " " + user.Profile.LastName
+		canToggle := true
+		skipReason := ""
+
+		// Security: Only SystemAdmin can toggle another SystemAdmin
+		if user.Role.Name == "SystemAdmin" && authUser.Role.Name != "SystemAdmin" {
+			canToggle = false
+			skipReason = "cannot toggle SystemAdmin"
+		}
+
+		// Only SystemAdmin or OpsAdmin can toggle users
+		if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+			canToggle = false
+			if skipReason == "" {
+				skipReason = "insufficient privileges"
+			}
+		}
+
+		if !canToggle {
+			skippedUsers = append(skippedUsers, map[string]interface{}{
+				"user_id":   user.UserID,
+				"full_name": fullName,
+				"role":      user.Role.Name,
+				"reason":    skipReason,
+			})
+			// Log skipped attempt in audit
+			c.LogAudit(authUser.UserID, "USER_TOGGLE_SKIPPED", nil, &user.UserID, nil, map[string]interface{}{
+				"full_name": fullName,
+				"role":      user.Role.Name,
+				"email":     user.Email,
+				"reason":    skipReason,
+			})
+			continue
+		}
+
+		// Toggle status
+		user.IsActive = input.Enable
+		if err := c.DB.Save(&user).Error; err != nil {
+			fmt.Println("[ERROR] Failed to update user:", user.UserID, err)
+			continue
+		}
+
+		// Notify the user
+		c.NotifyAndTrack(
+			user.UserID,
+			fmt.Sprintf("Account %s", strings.Title(statusText)),
+			fmt.Sprintf("Hello %s, your account has been %s by %s.", fullName, statusText, authUser.Profile.FirstName+" "+authUser.Profile.LastName),
+			"Account Status",
+			"User",
+			&user.UserID,
+			strings.Title(statusText),
+			true,
+		)
+
+		// Record audit log for successful toggle
+		c.LogAudit(authUser.UserID, "USER_"+strings.ToUpper(statusText), nil, &user.UserID, nil, map[string]interface{}{
+			"full_name": fullName,
+			"role":      user.Role.Name,
+			"email":     user.Email,
+		})
+
+		updatedUsers = append(updatedUsers, map[string]interface{}{
+			"user_id":   user.UserID,
+			"full_name": fullName,
+			"is_active": user.IsActive,
+		})
+	}
+
+	c.Json(w, http.StatusOK, fmt.Sprintf("Users successfully %s", statusText), map[string]interface{}{
+		"updated_users": updatedUsers,
+		"skipped_users": skippedUsers,
 	})
 }

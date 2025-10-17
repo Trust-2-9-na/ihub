@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -50,4 +52,21 @@ func ValidateJWT(tokenStr string) (*Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// GenerateRandomString returns a secure random string of the given length
+func GenerateRandomString(length int) (string, error) {
+	if length <= 0 {
+		return "", fmt.Errorf("invalid length")
+	}
+
+	// 3/4 * length because base64 encoding expands size by ~4/3
+	b := make([]byte, (length*3)/4)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+
+	s := base64.URLEncoding.EncodeToString(b)
+	return s[:length], nil
 }

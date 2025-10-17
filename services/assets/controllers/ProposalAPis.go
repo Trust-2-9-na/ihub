@@ -170,6 +170,7 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		"Proposal",
 		&proposal.ProposalID,
 		status,
+		true,
 	)
 	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
 	if payload.Submit {
@@ -184,6 +185,7 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 					"Proposal",
 					&proposal.ProposalID,
 					status,
+					true,
 				)
 			}
 		}
@@ -348,6 +350,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 					"Proposal",
 					&proposal.ProposalID,
 					proposal.Status,
+					true,
 				)
 			}
 		}
@@ -363,6 +366,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		"Proposal",
 		&proposal.ProposalID,
 		statusStr,
+		false,
 	)
 
 	// ─── Response ─────────────────────────────────────────────────────────────
@@ -608,6 +612,7 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 			"Proposal",
 			&pid,
 			statusStr,
+			true,
 		)
 		_ = c.LogAudit(user.UserID, body.Action+"_proposal", &pidStr, nil, nil, nil)
 	}

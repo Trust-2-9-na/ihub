@@ -23,19 +23,20 @@ type Permission struct {
 }
 
 type User struct {
-	UserID       uint64   `json:"user_id" gorm:"primaryKey;autoIncrement"`
-	UserUUID     string   `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
-	Username     string   `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
-	Email        string   `json:"email" gorm:"size:150;unique;not null"`
-	PasswordHash string   `json:"-" gorm:"column:password_hash;size:255;not null"`
-	RoleID       uint     `json:"role_id"`
-	Cohorts      []Cohort `gorm:"many2many:cohort_users;" json:"cohorts,omitempty"`
-	IsActive     bool     `json:"is_active" gorm:"default:true"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	Profile      UserProfile    `gorm:"foreignKey:UserID; references:UserID"`                                              // one-to-one link
-	Role         Role           `gorm:"foreignKey:RoleID;references:RoleID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"` // links User.RoleID -> Role.RoleID
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+	UserID        uint64   `json:"user_id" gorm:"primaryKey;autoIncrement"`
+	UserUUID      string   `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
+	Username      string   `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
+	Email         string   `json:"email" gorm:"size:150;unique;not null"`
+	PasswordHash  string   `json:"-" gorm:"column:password_hash;size:255;not null"`
+	RoleID        uint     `json:"role_id"`
+	Cohorts       []Cohort `gorm:"many2many:cohort_users;" json:"cohorts,omitempty"`
+	IsActive      bool     `json:"is_active" gorm:"default:true"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	Profile       UserProfile    `gorm:"foreignKey:UserID; references:UserID"`                                              // one-to-one link
+	Role          Role           `gorm:"foreignKey:RoleID;references:RoleID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"` // links User.RoleID -> Role.RoleID
+	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
+	EmailVerified bool           `gorm:"default:false"`
 
 	// belongs to Role
 
@@ -97,4 +98,14 @@ type SupervisorProfile struct {
 	Expertise    string  `json:"expertise"`
 	YearsExp     int     `json:"years_exp"`
 	Organization string  `json:"organization"`
+}
+
+// email verification model
+
+type EmailVerification struct {
+	ID        uint64    `gorm:"primaryKey;autoIncrement"`
+	UserID    uint64    `gorm:"not null;index"`
+	Token     string    `gorm:"uniqueIndex;not null"`
+	ExpiresAt time.Time `gorm:"not null"`
+	CreatedAt time.Time
 }

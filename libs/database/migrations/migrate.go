@@ -195,6 +195,14 @@ WHERE role = 'Supervisor';
 	}
 	log.Println("mentor feedback table created successfully")
 
+	// 19 migrate email verification
+
+	if err := db.AutoMigrate(&models.EmailVerification{}); err != nil {
+		log.Printf("Migration failed for email verification: %v", err)
+		return err
+	}
+	log.Println("email verification table created successfully")
+
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user
@@ -255,11 +263,11 @@ func seedAdmins(db *gorm.DB) error {
 	}
 
 	sysAdmin := models.User{
-		Username:     "system-admin",
-		Email:        "sysadmin@domain.com",
-		PasswordHash: sysPassword,
-		RoleID:       sysAdminRole.RoleID,
-		IsActive:     true,
+		Email:         "sysadmin@domain.com",
+		PasswordHash:  sysPassword,
+		RoleID:        sysAdminRole.RoleID,
+		IsActive:      true,
+		EmailVerified: true, // mark as verified
 	}
 
 	if err := db.Where("email = ?", sysAdmin.Email).FirstOrCreate(&sysAdmin).Error; err != nil {
@@ -286,11 +294,11 @@ func seedAdmins(db *gorm.DB) error {
 	}
 
 	opsAdmin := models.User{
-		Username:     "ops-admin",
-		Email:        "opsadmin@domain.com",
-		PasswordHash: opsPassword,
-		RoleID:       opsAdminRole.RoleID,
-		IsActive:     true,
+		Email:         "tnachokwe@gmail.com",
+		PasswordHash:  opsPassword,
+		RoleID:        opsAdminRole.RoleID,
+		IsActive:      true,
+		EmailVerified: true, // mark as verified
 	}
 
 	if err := db.Where("email = ?", opsAdmin.Email).FirstOrCreate(&opsAdmin).Error; err != nil {

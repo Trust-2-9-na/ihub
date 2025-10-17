@@ -132,6 +132,7 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 		entity.EntityType,
 		&entity.ID,
 		entity.Status,
+		true,
 	)
 
 	if body.AssignedToID != nil {
@@ -143,6 +144,7 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 			entity.EntityType,
 			&entity.ID,
 			"Pending",
+			true,
 		)
 	}
 
@@ -366,6 +368,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		entity.EntityType,
 		&item.ID,
 		item.StudentStatus,
+		false,
 	)
 
 	// --- Notify assigned user (if any) ---
@@ -379,6 +382,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 			entity.EntityType,
 			&item.ID,
 			item.StudentStatus,
+			true,
 		)
 	}
 
@@ -508,6 +512,7 @@ func (c *Construct) UpdateProgressEntity(w http.ResponseWriter, r *http.Request)
 			entity.EntityType,
 			&entity.ID,
 			entity.Status,
+			true,
 		)
 	}
 
@@ -658,6 +663,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 			item.Entity.EntityType,
 			item.EntityID,
 			item.StudentStatus,
+			true,
 		)
 	}
 
@@ -670,6 +676,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		item.Entity.EntityType,
 		item.EntityID,
 		item.StudentStatus,
+		true,
 	)
 
 	// --- Response ---
@@ -743,6 +750,7 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				item.Entity.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
+				false,
 			)
 
 		case "unarchive":
@@ -757,6 +765,7 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				item.Entity.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
+				false,
 			)
 
 		case "delete":
@@ -770,6 +779,7 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				item.Entity.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
+				true,
 			)
 
 		default:
@@ -858,6 +868,7 @@ func (c *Construct) ManageProgressEntities(w http.ResponseWriter, r *http.Reques
 				entity.EntityType,
 				&entity.ID,
 				entity.Status,
+				true,
 			)
 
 			// Cascade: archive all items under this entity
@@ -876,6 +887,7 @@ func (c *Construct) ManageProgressEntities(w http.ResponseWriter, r *http.Reques
 				entity.EntityType,
 				&entity.ID,
 				entity.Status,
+				true,
 			)
 
 			// Cascade: unarchive all items
@@ -893,6 +905,7 @@ func (c *Construct) ManageProgressEntities(w http.ResponseWriter, r *http.Reques
 				entity.EntityType,
 				&entity.ID,
 				entity.Status,
+				true,
 			)
 			// Cascade: delete all items
 			for _, item := range entity.Items {
@@ -1112,6 +1125,7 @@ func (c *Construct) GetProgressEntities(w http.ResponseWriter, r *http.Request) 
 			"ProgressEntity",
 			nil,
 			"success",
+			false,
 		)
 
 		// Optional DB audit log

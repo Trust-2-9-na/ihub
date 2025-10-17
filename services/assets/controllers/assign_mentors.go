@@ -82,7 +82,9 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 	// Notify & Audit
 	c.NotifyAndTrack(body.MentorID, "Mentor Assignment",
 		fmt.Sprintf("You have been assigned to cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortID, "")
+		"Assignment", "Cohort", &body.CohortID, "",
+		true,
+	)
 
 	c.Json(w, http.StatusOK, "Mentor assigned successfully", map[string]interface{}{
 		"cohort_id": body.CohortID,
@@ -176,6 +178,7 @@ func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
 		"Mentor Reassignment",
 		fmt.Sprintf("You have been removed from cohort %d by %s", body.CohortID, currentUser.Username),
 		"Reassignment", "Cohort", &body.CohortID, "Completed",
+		true,
 	)
 
 	c.NotifyAndTrack(
@@ -183,6 +186,7 @@ func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
 		"Mentor Reassignment",
 		fmt.Sprintf("You have been assigned to cohort %d by %s", body.CohortID, currentUser.Username),
 		"Reassignment", "Cohort", &body.CohortID, "Completed",
+		true,
 	)
 
 	// 🔹 5️⃣ Final response
@@ -226,7 +230,9 @@ func (c *Construct) UnassignMentor(w http.ResponseWriter, r *http.Request) {
 
 	c.NotifyAndTrack(body.MentorID, "Mentor Unassigned",
 		fmt.Sprintf("You have been unassigned from cohort '%d'", body.CohortID),
-		"Unassignment", "Cohort", &body.CohortID, "")
+		"Unassignment", "Cohort", &body.CohortID, "",
+		true,
+	)
 
 	c.Json(w, http.StatusOK, "Mentor unassigned successfully", map[string]interface{}{
 		"cohort_id": body.CohortID,
@@ -373,6 +379,7 @@ func (c *Construct) GetCohortMentors(w http.ResponseWriter, r *http.Request) {
 			"CohortMentor",
 			nil,
 			"",
+			false,
 		)
 	} else if roleName == "supervisor" {
 		c.NotifyAndTrack(
@@ -383,6 +390,7 @@ func (c *Construct) GetCohortMentors(w http.ResponseWriter, r *http.Request) {
 			"CohortMentor",
 			nil,
 			"",
+			false,
 		)
 	}
 }

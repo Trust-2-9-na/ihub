@@ -191,6 +191,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			"WeeklyReport",
 			&report.ID,
 			"Pending Verification",
+			false,
 		)
 	}
 
@@ -372,6 +373,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 				"WeeklyReport",
 				&report.ID,
 				"Commented",
+				false,
 			)
 		}
 	}
@@ -455,6 +457,7 @@ func (c *Construct) AddOrReplyReportComment(w http.ResponseWriter, r *http.Reque
 			"WeeklyReport",
 			&report.ID,
 			"",
+			false,
 		)
 	}
 
@@ -623,6 +626,7 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		"WeeklyReport",
 		&report.ID,
 		report.Status,
+		true,
 	)
 
 	// 8️⃣ Build response
@@ -853,6 +857,7 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 		"WeeklyReport",
 		nil,
 		"Viewed",
+		false,
 	)
 
 	c.Json(w, http.StatusOK, "Weekly reports fetched successfully", map[string]interface{}{
@@ -912,6 +917,7 @@ func (c *Construct) ManageWeeklyReports(w http.ResponseWriter, r *http.Request) 
 			c.NotifyAndTrack(user.UserID, "Weekly Report Archived",
 				fmt.Sprintf("Weekly report #%d was archived", report.ID),
 				"Weekly Report Archive", "WeeklyReport", &report.ID, "Archived",
+				false,
 			)
 
 		case "unarchive":
@@ -925,6 +931,7 @@ func (c *Construct) ManageWeeklyReports(w http.ResponseWriter, r *http.Request) 
 			c.NotifyAndTrack(user.UserID, "Weekly Report Unarchived",
 				fmt.Sprintf("Weekly report #%d was unarchived", report.ID),
 				"Weekly Report Unarchive", "WeeklyReport", &report.ID, "Unarchived",
+				false,
 			)
 
 		case "delete":
@@ -940,12 +947,14 @@ func (c *Construct) ManageWeeklyReports(w http.ResponseWriter, r *http.Request) 
 				c.NotifyAndTrack(user.UserID, "Weekly Report Archived",
 					fmt.Sprintf("You archived your weekly report #%d", report.ID),
 					"Weekly Report Archive", "WeeklyReport", &report.ID, "Archived",
+					false,
 				)
 			} else if user.Role.Name == "Supervisor" || user.Role.Name == "OpsAdmin" || user.Role.Name == "SystemAdmin" {
 				c.DB.Unscoped().Delete(&report)
 				c.NotifyAndTrack(user.UserID, "Weekly Report Deleted Permanently",
 					fmt.Sprintf("Weekly report #%d was permanently deleted", report.ID),
 					"Weekly Report Deletion", "WeeklyReport", &report.ID, "Deleted",
+					true,
 				)
 			} else {
 				c.Json(w, http.StatusForbidden, "You do not have permission to delete this report", nil)

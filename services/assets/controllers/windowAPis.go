@@ -136,6 +136,7 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 			"ProposalSubmissionWindow",
 			&window.WindowID,
 			"Notified",
+			true,
 		)
 	}
 
@@ -150,6 +151,7 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 		"ProposalSubmissionWindow",
 		&window.WindowID,
 		"Created",
+		true,
 	)
 
 	// ---------------------------
@@ -220,6 +222,7 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 			"ProposalSubmissionWindow",
 			nil,
 			"Viewed",
+			false,
 		)
 
 	case "student":
@@ -267,6 +270,7 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 			"ProposalSubmissionWindow",
 			nil,
 			"Viewed",
+			false,
 		)
 
 	default:
@@ -413,6 +417,7 @@ func (c *Construct) UpdateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 		"ProposalSubmissionWindow",
 		&window.WindowID,
 		"Updated",
+		true,
 	)
 	c.Json(w, http.StatusOK, "Submission window fetched successfully", map[string]interface{}{
 		"window": window, // the struct is inside a map
@@ -510,6 +515,7 @@ func (c *Construct) ManageSubmissionWindows(w http.ResponseWriter, r *http.Reque
 			"ProposalSubmissionWindow",
 			&window.WindowID,
 			statusText,
+			true,
 		)
 
 		results = append(results, map[string]interface{}{

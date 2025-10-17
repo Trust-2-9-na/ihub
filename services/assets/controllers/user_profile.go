@@ -52,13 +52,13 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// Base response (common to all users)
 	resp := map[string]interface{}{
 		"user_id":    user.UserID,
-		"username":   user.Username,
 		"email":      user.Email,
 		"first_name": user.Profile.FirstName,
 		"last_name":  user.Profile.LastName,
 		"phone":      user.Profile.Phone,
 		"address":    user.Profile.Address,
 		"bio":        user.Profile.Bio,
+		"avatar_url": user.Profile.AvatarURL,
 	}
 
 	// Add role-specific profile if available
@@ -140,7 +140,17 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	if err := c.DB.Save(profile).Error; err != nil {
 		// Notification for failure
-		c.CreateNotification(user.UserID, "Profile Update Failed", "There was an error updating your profile. Please try again.")
+		c.NotifyAndTrack(
+			user.UserID,
+			"Profile Update Failed", // Notification/Email title
+			"There was an error updating your profile. Please try again.", // Message
+			"Update",      // Category / Action type
+			"UserProfile", // Entity type
+			&user.UserID,  // Entity ID
+			"Failed",      // Status
+			true,          // Send email (set false if you don't want an email)
+		)
+
 		c.Json(w, http.StatusInternalServerError, "Failed to update profile", map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -195,7 +205,16 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ✅ Notify user
-	c.CreateNotification(user.UserID, "Profile Updated Successfully", "Your profile has been updated successfully.")
+	c.NotifyAndTrack(
+		user.UserID,
+		"Profile Updated Successfully",                // Notification/Email title
+		"Your profile has been updated successfully.", // Message
+		"Update",      // Category / Action type
+		"UserProfile", // Entity type
+		&user.UserID,  // Entity ID
+		"Updated",     // Status
+		true,          // Send email (set false if you don't want an email)
+	)
 
 	// ✅ Audit log
 	ip := r.RemoteAddr

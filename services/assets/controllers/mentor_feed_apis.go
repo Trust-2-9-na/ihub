@@ -86,6 +86,7 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 			"MentorFeedback",
 			&feedback.ID,
 			"",
+			true,
 		)
 
 		// Optional: create a job/audit record for student
@@ -104,6 +105,7 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 			"MentorFeedback",
 			&feedback.ID,
 			"",
+			true,
 		)
 
 		// Optional: create audit/job entry for supervisor
@@ -196,6 +198,7 @@ func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		"MentorFeedback",
 		&feedback.ID,
 		"",
+		true,
 	)
 
 	// Notify supervisors of the student
@@ -209,6 +212,7 @@ func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request)
 			"MentorFeedback",
 			&feedback.ID,
 			"",
+			true,
 		)
 	}
 
@@ -380,6 +384,7 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 				"MentorFeedback",
 				&f.ID,
 				"Viewed",
+				false,
 			)
 		}
 	}
@@ -458,6 +463,7 @@ func (c *Construct) ManageMentorFeedbacks(w http.ResponseWriter, r *http.Request
 			c.NotifyAndTrack(user.UserID, "Mentor Feedback Archived",
 				fmt.Sprintf("Mentor feedback #%d was archived", fb.ID),
 				"Mentor Feedback Archive", "MentorFeedback", &fb.ID, "Archived",
+				false,
 			)
 
 		case "unarchive":
@@ -469,6 +475,7 @@ func (c *Construct) ManageMentorFeedbacks(w http.ResponseWriter, r *http.Request
 			c.NotifyAndTrack(user.UserID, "Mentor Feedback Unarchived",
 				fmt.Sprintf("Mentor feedback #%d was unarchived", fb.ID),
 				"Mentor Feedback Unarchive", "MentorFeedback", &fb.ID, "Unarchived",
+				false,
 			)
 
 		case "delete":
@@ -479,6 +486,7 @@ func (c *Construct) ManageMentorFeedbacks(w http.ResponseWriter, r *http.Request
 			c.NotifyAndTrack(user.UserID, "Mentor Feedback Deleted Permanently",
 				fmt.Sprintf("Mentor feedback #%d was permanently deleted", fb.ID),
 				"Mentor Feedback Deletion", "MentorFeedback", &fb.ID, "Deleted",
+				true,
 			)
 
 		default:
@@ -490,6 +498,7 @@ func (c *Construct) ManageMentorFeedbacks(w http.ResponseWriter, r *http.Request
 		c.NotifyAndTrack(fb.StudentID, "Mentor Feedback Updated",
 			fmt.Sprintf("Your feedback #%d has been %sed by %s.", fb.ID, actionLower, user.Profile.FirstName),
 			"Mentor Feedback", "MentorFeedback", &fb.ID, strings.Title(actionLower),
+			false,
 		)
 
 		// Append updated info to response

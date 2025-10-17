@@ -87,6 +87,7 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		"Cohort",
 		&cohort.CohortID,
 		"Created",
+		false,
 	)
 
 	// --- 7. Audit trail ---
@@ -273,6 +274,7 @@ func (c *Construct) GetCohorts(w http.ResponseWriter, r *http.Request) {
 		"Cohort",
 		nil,
 		"Viewed",
+		false,
 	)
 
 	// --- 8. Send response with pagination info ---
@@ -375,10 +377,17 @@ func (c *Construct) DeleteCohorts(w http.ResponseWriter, r *http.Request) {
 		if !contains(allowed, cohort.CohortID) {
 			continue
 		}
-		_ = c.CreateNotification(user.UserID, "Cohort Deleted", "Cohort "+cohort.Name+" has been permanently deleted.")
-		_ = c.LogAudit(user.UserID, "delete", func() *string { s := "cohort"; return &s }(), &cohort.CohortID, nil, map[string]interface{}{
-			"name": cohort.Name,
-		})
+		c.NotifyAndTrack(
+			user.UserID,
+			"Cohort Deleted",
+			fmt.Sprintf("Cohort '%s' has been permanently deleted.", cohort.Name),
+			"Delete",         // category / action type
+			"Cohort",         // entity type
+			&cohort.CohortID, // entity ID
+			"Deleted",
+			true, // status or outcome
+		)
+
 		c.DB.Create(&models.SystemHistory{
 			EntityType: "Cohort",
 			EntityID:   &cohort.CohortID,
@@ -450,8 +459,17 @@ func (c *Construct) ArchiveCohort(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		c.LogAudit(user.UserID, "archive", ptrString("cohort"), &cohort.CohortID, nil, nil)
-		c.CreateNotification(user.UserID, "Cohort Archived", fmt.Sprintf("Cohort '%s' has been archived.", cohort.Name))
+		c.NotifyAndTrack(
+			user.UserID,
+			"Cohort Archived",
+			fmt.Sprintf("Cohort '%s' has been archived.", cohort.Name),
+			"Archive",        // category / action type
+			"Cohort",         // entity type
+			&cohort.CohortID, // entity ID
+			"Archived",
+			true, // status or outcome
+		)
+
 	}
 
 	c.Json(w, http.StatusOK, "Cohorts archived successfully", map[string]interface{}{"cohort_ids": body.CohortIDs})
@@ -492,8 +510,17 @@ func (c *Construct) RestoreCohort(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		c.LogAudit(user.UserID, "restore", ptrString("cohort"), &cohort.CohortID, nil, nil)
-		c.CreateNotification(user.UserID, "Cohort Restored", fmt.Sprintf("Cohort '%s' has been restored.", cohort.Name))
+		c.NotifyAndTrack(
+			user.UserID,
+			"Cohort Restored",
+			fmt.Sprintf("Cohort '%s' has been restored.", cohort.Name),
+			"Restore",        // category / action type
+			"Cohort",         // entity type
+			&cohort.CohortID, // entity ID
+			"Restored",
+			true, // status or outcome
+		)
+
 	}
 
 	c.Json(w, http.StatusOK, "Cohorts restored successfully", map[string]interface{}{"cohort_ids": body.CohortIDs})
@@ -582,8 +609,17 @@ func (c *Construct) RemoveStudentFromCohort(w http.ResponseWriter, r *http.Reque
 	})
 
 	// Notify student
-	_ = c.CreateNotification(student.UserID, "Removed from Cohort",
-		fmt.Sprintf("You have been removed from the cohort '%s' by %s (%s).", cohort.Name, actingUser.Profile.FirstName, actingUser.Role.Name))
+	c.NotifyAndTrack(
+		student.UserID,
+		"Removed from Cohort",
+		fmt.Sprintf("You have been removed from the cohort '%s' by %s (%s).",
+			cohort.Name, actingUser.Profile.FirstName, actingUser.Role.Name),
+		"Removal",        // category / action type
+		"Cohort",         // entity type
+		&cohort.CohortID, // entity ID
+		"Removed",
+		true, // status
+	)
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Student '%s %s' removed successfully from cohort '%s'",
 		student.Profile.FirstName, student.Profile.LastName, cohort.Name), nil)
@@ -690,7 +726,16 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// --- Notification ---
-	_ = c.CreateNotification(user.UserID, "Cohort Updated", fmt.Sprintf("Cohort '%s' has been updated.", cohort.Name))
+	c.NotifyAndTrack(
+		user.UserID,
+		"Cohort Updated",
+		fmt.Sprintf("Cohort '%s' has been updated.", cohort.Name),
+		"Update",         // category (action type)
+		"Cohort",         // entity type
+		&cohort.CohortID, // entity ID
+		"Success",
+		false, // status or outcome
+	)
 
 	// --- Response ---
 	resp := map[string]interface{}{
