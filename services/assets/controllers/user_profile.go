@@ -2,8 +2,10 @@ package controllers
 
 import (
 	"encoding/json"
-	"mime"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,39 +19,51 @@ type UpdateProfileInput struct {
 	Phone        *string `json:"phone,omitempty"`
 	Address      *string `json:"address,omitempty"`
 	Bio          *string `json:"bio,omitempty"`
-	School       *string `json:"school,omitempty"`        // For students
-	Program      *string `json:"program,omitempty"`       // For students
-	YearOfStudy  *string `json:"year_of_study,omitempty"` // For students
-	Department   *string `json:"department,omitempty"`    // For mentors/supervisors
-	Organization *string `json:"organization,omitempty"`  // For mentors/supervisors
-	Expertise    *string `json:"expertise,omitempty"`     // For mentors/supervisors
-	YearsExp     *int    `json:"years_exp,omitempty"`     // For mentors/supervisors
+	AvatarURL    *string `json:"avatar_url,omitempty"` // <-- new
+	School       *string `json:"school,omitempty"`
+	Program      *string `json:"program,omitempty"`
+	YearOfStudy  *string `json:"year_of_study,omitempty"`
+	Department   *string `json:"department,omitempty"`
+	Organization *string `json:"organization,omitempty"`
+	Expertise    *string `json:"expertise,omitempty"`
+	YearsExp     *int    `json:"years_exp,omitempty"`
 }
 
 //===== GetProfile handles GET /api/profile/{user_id}=====================
 
 func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
-	// Get authenticated user UUID from context (set by JWT middleware)
-	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
-	if !ok || userUUID == "" {
+	// Get authenticated user UUID from context (JWT middleware)
+	viewerUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || viewerUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	// Get target user_id from query or URL
+	userIDStr := r.URL.Query().Get("user_id")
+	if userIDStr == "" {
+		c.Json(w, http.StatusBadRequest, "Missing user_id", nil)
+		return
+	}
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid user_id", nil)
 		return
 	}
 
 	// Fetch user with related profiles
 	var user models.User
-	err := c.DB.
+	if err := c.DB.
 		Preload("Profile").
 		Preload("StudentProfile").
 		Preload("MentorProfile").
 		Preload("SupervisorProfile").
-		First(&user, "user_uuid = ?", userUUID).Error
-	if err != nil {
+		First(&user, "user_id = ?", userID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "User not found", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Base response (common to all users)
+	// Build base response
 	resp := map[string]interface{}{
 		"user_id":    user.UserID,
 		"email":      user.Email,
@@ -58,10 +72,10 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 		"phone":      user.Profile.Phone,
 		"address":    user.Profile.Address,
 		"bio":        user.Profile.Bio,
-		"avatar_url": user.Profile.AvatarURL,
+		"avatar_url": user.Profile.AvatarURL, // include profile pic
 	}
 
-	// Add role-specific profile if available
+	// Add role-specific info
 	if user.StudentProfile != nil {
 		resp["student"] = map[string]interface{}{
 			"school":        user.StudentProfile.School,
@@ -69,7 +83,6 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 			"year_of_study": user.StudentProfile.YearOfStudy,
 		}
 	}
-
 	if user.MentorProfile != nil {
 		resp["mentor"] = map[string]interface{}{
 			"department":   user.MentorProfile.Department,
@@ -78,7 +91,6 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 			"years_exp":    user.MentorProfile.YearsExp,
 		}
 	}
-
 	if user.SupervisorProfile != nil {
 		resp["supervisor"] = map[string]interface{}{
 			"department":   user.SupervisorProfile.Department,
@@ -88,7 +100,23 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Return JSON response
+	// Track view if viewer is not the same as the profile owner
+	if viewerUUID != user.UserUUID {
+		var viewer models.User
+		if err := c.DB.First(&viewer, "user_uuid = ?", viewerUUID).Error; err == nil {
+			c.NotifyAndTrack(
+				viewer.UserID,
+				"Profile Viewed",
+				fmt.Sprintf("You viewed %s's profile.", user.Profile.FirstName),
+				"View",        // Action type
+				"UserProfile", // Entity type
+				&user.UserID,  // Entity ID
+				"Viewed",      // Status
+				false,         // Do not send email
+			)
+		}
+	}
+
 	c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
 }
 
@@ -121,6 +149,7 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update main profile
+	// --- Update main profile ---
 	profile := &user.Profile
 	if input.FirstName != nil {
 		profile.FirstName = *input.FirstName
@@ -136,6 +165,19 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Bio != nil {
 		profile.Bio = input.Bio
+	}
+
+	// --- Update avatar if provided ---
+	if input.AvatarURL != nil && *input.AvatarURL != "" {
+		ext := strings.ToLower(filepath.Ext(*input.AvatarURL))
+		allowedExts := map[string]bool{
+			".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		}
+		if !allowedExts[ext] {
+			c.Json(w, http.StatusBadRequest, "Invalid file type for avatar", nil)
+			return
+		}
+		profile.AvatarURL = input.AvatarURL
 	}
 
 	if err := c.DB.Save(profile).Error; err != nil {
@@ -232,64 +274,92 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// UpdateAvatar updates a user's avatar with file validation
+// UpdateAvatar handles uploading/updating a user's avatar with tracking and notifications
+
 func (c *Construct) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 	userIDStr := r.URL.Query().Get("user_id")
 	if userIDStr == "" {
 		c.Json(w, http.StatusBadRequest, "Missing user_id", nil)
 		return
 	}
-	userID, _ := strconv.ParseUint(userIDStr, 10, 64)
-
-	var payload struct {
-		AvatarURL string `json:"avatar_url"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid user_id", nil)
 		return
 	}
 
-	// --- Validate file extension ---
-	allowedExts := map[string]bool{
-		".jpg":  true,
-		".jpeg": true,
-		".png":  true,
-		".gif":  true,
-		".webp": true,
+	// Parse multipart form (max 5MB)
+	if err := r.ParseMultipartForm(5 << 20); err != nil {
+		c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(payload.AvatarURL))
+	file, handler, err := r.FormFile("avatar")
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Failed to read file", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer file.Close()
+
+	// Validate extension
+	allowedExts := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true}
+	ext := strings.ToLower(filepath.Ext(handler.Filename))
 	if !allowedExts[ext] {
 		c.Json(w, http.StatusBadRequest, "Invalid file type. Allowed: .jpg, .jpeg, .png, .gif, .webp", nil)
 		return
 	}
 
-	// --- Validate MIME type ---
-	mimeType := mime.TypeByExtension(ext)
-	allowedMIMEs := map[string]bool{
-		"image/jpeg": true,
-		"image/png":  true,
-		"image/gif":  true,
-		"image/webp": true,
+	// Validate MIME type
+	buf := make([]byte, 512)
+	if _, err := file.Read(buf); err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to read file for validation", nil)
+		return
 	}
-
+	mimeType := http.DetectContentType(buf)
+	file.Seek(0, 0) // reset read pointer
+	allowedMIMEs := map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true}
 	if !allowedMIMEs[mimeType] {
 		c.Json(w, http.StatusBadRequest, "Invalid MIME type for image", nil)
 		return
 	}
 
-	// --- Find and update profile ---
+	// Save file locally
+	avatarPath := fmt.Sprintf("uploads/avatars/user_%d%s", userID, ext)
+	out, err := os.Create(avatarPath)
+	if err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to save avatar", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, file); err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to write file", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Update user profile
 	var profile models.UserProfile
 	if err := c.DB.Where("user_id = ?", userID).First(&profile).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Profile not found", nil)
 		return
 	}
 
-	profile.AvatarURL = &payload.AvatarURL
+	profile.AvatarURL = &avatarPath
 	if err := c.DB.Save(&profile).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update avatar", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	c.Json(w, http.StatusOK, "Avatar updated successfully", map[string]interface{}{"profile": profile})
+	// Notify & track
+	c.NotifyAndTrack(
+		userID,
+		"Profile Updated Successfully", // Notification title
+		"Your profile has been updated successfully.", // Message
+		"Update",      // Action type
+		"UserProfile", // Entity type
+		&userID,       // Entity ID
+		"Updated",     // Status
+		true,          // Send email
+	)
+
+	c.Json(w, http.StatusOK, "Avatar uploaded successfully", map[string]interface{}{"profile": profile})
 }

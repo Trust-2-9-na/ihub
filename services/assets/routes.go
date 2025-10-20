@@ -27,6 +27,15 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	api.HandleFunc("/signup/mentor", c.SignupMentor).Methods("POST")
 	api.HandleFunc("/signup/supervisor", c.SignupSupervisor).Methods("POST")
 
+	// google authentication routes
+	api.HandleFunc("/signup/student/google", c.GoogleSignupStudent).Methods("POST")
+	api.HandleFunc("/signup/mentor/google", c.GoogleSignupMentor).Methods("POST")
+	api.HandleFunc("/signup/supervisor/google", c.GoogleSignupSupervisor).Methods("POST")
+
+	// ---------------- AUTH / PASSWORD ----------------
+	api.HandleFunc("/password/forgot", c.ForgotPassword).Methods("POST") // No auth, user provides email
+	api.HandleFunc("/password/reset", c.ResetPassword).Methods("POST")   // No auth, user provides token & new password
+
 	// email verification routes
 	api.HandleFunc("/verify-email", c.VerifyEmail).Methods("GET")                     // Clickable link in email
 	api.HandleFunc("/resend-verification", c.ResendVerificationEmail).Methods("POST") // Request new token
@@ -39,6 +48,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// Logs
 	admin.Handle("/logs/audit", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"}, "view_logs")(http.HandlerFunc(c.GetAuditLogs))).Methods("GET")
 	admin.Handle("/logs/jobs", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "view_logs")(http.HandlerFunc(c.GetJobLogs))).Methods("GET")
+
+	// Change password
+	admin.Handle("/password/change", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"})(http.HandlerFunc(c.ChangePassword))).Methods("POST")
 
 	// Users & Roles
 	admin.Handle("/users", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"})(http.HandlerFunc(c.GetUsers))).Methods("GET")
@@ -124,10 +136,14 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor := api.PathPrefix("/supervisor").Subrouter()
 	supervisor.Use(middlewares.RoleAuthorization(db, []string{"Supervisor"}))
 
+	// Change password
+	supervisor.Handle("/password/change", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ChangePassword))).Methods("POST")
+
 	supervisor.Handle("/users", middlewares.RoleAuthorization(db, []string{"Supervisor"}, "view_reports")(http.HandlerFunc(c.GetUsers))).Methods("GET")
 	supervisor.Handle("/students", middlewares.RoleAuthorization(db, []string{"Supervisor"}, "view_reports")(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	supervisor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProfile))).Methods("PUT")
 	supervisor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProfile))).Methods("GET")
+	supervisor.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProfile))).Methods("POST")
 
 	supervisor.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetNotifications))).Methods("GET")
 	supervisor.Handle("/notifications/mark", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.MarkNotificationRead))).Methods("PATCH")
@@ -171,10 +187,14 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor := api.PathPrefix("/mentor").Subrouter()
 	mentor.Use(middlewares.RoleAuthorization(db, []string{"Mentor"}))
 
+	// Change password
+	mentor.Handle("/password/change", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.ChangePassword))).Methods("POST")
+
 	mentor.Handle("/users", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.GetUsers))).Methods("GET")
 	mentor.Handle("/students", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	mentor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.UpdateProfile))).Methods("PUT")
 	mentor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetProfile))).Methods("GET")
+	mentor.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetProfile))).Methods("POST")
 
 	mentor.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetNotifications))).Methods("GET")
 	mentor.Handle("/notifications/mark", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.MarkNotificationRead))).Methods("PATCH")
@@ -207,9 +227,13 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student := api.PathPrefix("/student").Subrouter()
 	student.Use(middlewares.RoleAuthorization(db, []string{"Student"}))
 
+	// Change password
+	student.Handle("/password/change", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ChangePassword))).Methods("POST")
+
 	student.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetProfile))).Methods("GET")
 	student.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateProfile))).Methods("PUT")
 	student.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateAvatar))).Methods("PATCH")
+	student.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetProfile))).Methods("POST")
 
 	student.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetNotifications))).Methods("GET")
 	student.Handle("/notifications/mark", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.MarkNotificationRead))).Methods("PATCH")

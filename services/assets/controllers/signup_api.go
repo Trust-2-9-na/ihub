@@ -73,6 +73,7 @@ func (c *Construct) SignupStudent(w http.ResponseWriter, r *http.Request) {
 			}
 			return c.DB.Create(&student).Error
 		},
+		false,
 	)
 }
 
@@ -100,6 +101,7 @@ func (c *Construct) SignupMentor(w http.ResponseWriter, r *http.Request) {
 			}
 			return c.DB.Create(&mentor).Error
 		},
+		false,
 	)
 }
 
@@ -128,6 +130,7 @@ func (c *Construct) SignupSupervisor(w http.ResponseWriter, r *http.Request) {
 			}
 			return c.DB.Create(&supervisor).Error
 		},
+		false,
 	)
 }
 
@@ -137,14 +140,19 @@ func (c *Construct) signupUserWithRole(
 	w http.ResponseWriter,
 	roleName, firstName, lastName, email, password string,
 	createRoleProfile func(userID uint64) error,
+	isGoogle bool, // new flag
 ) {
 	now := time.Now()
 
-	// 1️⃣ Hash the password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to hash password", map[string]interface{}{"error": err.Error()})
-		return
+	var hashedPassword string
+	if !isGoogle {
+		// 1️⃣ Hash the password only if not Google
+		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to hash password", map[string]interface{}{"error": err.Error()})
+			return
+		}
+		hashedPassword = string(h)
 	}
 
 	// 2️⃣ Check if the email already exists
@@ -164,17 +172,17 @@ func (c *Construct) signupUserWithRole(
 	// 4️⃣ Create the user
 	user := models.User{
 		Email:         email,
-		PasswordHash:  string(hashedPassword),
+		PasswordHash:  hashedPassword,
 		RoleID:        role.RoleID,
 		IsActive:      true,
-		EmailVerified: false, // not verified yet
+		EmailVerified: isGoogle, // ✅ already verified if Google
 	}
 	if err := c.DB.Create(&user).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to create user", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 5️⃣ Create UserProfile with first and last name
+	// 5️⃣ Create UserProfile
 	profile := models.UserProfile{
 		UserID:    user.UserID,
 		FirstName: firstName,
@@ -191,40 +199,36 @@ func (c *Construct) signupUserWithRole(
 		return
 	}
 
-	// 7️⃣ Generate email verification token
-	token, err := utils.GenerateRandomString(32)
-	if err != nil {
-		log.Println("Failed to generate verification token:", err)
-		c.Json(w, http.StatusInternalServerError, "Could not generate verification token", nil)
-		return
-	}
-
-	verification := models.EmailVerification{
-		UserID:    user.UserID,
-		Token:     token,
-		ExpiresAt: now.Add(24 * time.Hour),
-		CreatedAt: now,
-	}
-	if err := c.DB.Create(&verification).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to create email verification record", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// 8️⃣ Send verification email asynchronously
-	go func() {
-		verifyURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
-		body := fmt.Sprintf(
-			"Hello %s %s,<br><br>"+
-				"Thank you for registering. Please verify your email by clicking "+
-				"<a href='%s'>here</a>.<br><br>Expires in 24 hours.",
-			profile.FirstName, profile.LastName, verifyURL,
-		)
-		if err := c.SendEmailNotification(user.Email, "Verify Your Email", body); err != nil {
-			log.Printf("[ERROR] Failed to send verification email to %s: %v", user.Email, err)
+	// 7️⃣ If not Google, create verification token
+	var token, verifyURL string
+	if !isGoogle {
+		token, err := utils.GenerateRandomString(32)
+		if err != nil {
+			log.Println("Failed to generate verification token:", err)
+			c.Json(w, http.StatusInternalServerError, "Could not generate verification token", nil)
+			return
 		}
-	}()
 
-	// 9️⃣ Audit & notification
+		verification := models.EmailVerification{
+			UserID:    user.UserID,
+			Token:     token,
+			ExpiresAt: now.Add(24 * time.Hour),
+			CreatedAt: now,
+		}
+		_ = c.DB.Create(&verification)
+
+		// Send verification email
+		go func() {
+			verifyURL = fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
+			body := fmt.Sprintf(
+				"Hello %s %s,<br><br>Thank you for registering. Please verify your email by clicking <a href='%s'>here</a>.<br><br>Expires in 24 hours.",
+				profile.FirstName, profile.LastName, verifyURL,
+			)
+			_ = c.SendEmailNotification(user.Email, "Verify Your Email", body)
+		}()
+	}
+
+	// 8️⃣ Audit & notification
 	c.NotifyAndTrack(
 		user.UserID,
 		"Account Created",
@@ -232,26 +236,30 @@ func (c *Construct) signupUserWithRole(
 		"Account Creation",
 		"User",
 		&user.UserID,
-		"Pending Verification",
+		func() string {
+			if isGoogle {
+				return "Verified"
+			} else {
+				return "Pending Verification"
+			}
+		}(),
 		true,
 	)
 
-	// 10️⃣ Return response with full name and email
-	// 10️⃣ Return response with full name, email, and dev verification link
-	verifyURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
-
+	// 9️⃣ Return response
 	response := map[string]interface{}{
-		"user_id":     user.UserID,
-		"first_name":  profile.FirstName,
-		"last_name":   profile.LastName,
-		"email":       user.Email,
-		"profile_id":  profile.ProfileID,
-		"verify_link": verifyURL, // ✅ show verification link for dev/testing
-		"token":       token,     // ✅ show token directly for manual testing
+		"user_id":    user.UserID,
+		"first_name": profile.FirstName,
+		"last_name":  profile.LastName,
+		"email":      user.Email,
+		"profile_id": profile.ProfileID,
+	}
+	if !isGoogle {
+		response["token"] = token
+		response["verify_link"] = verifyURL
 	}
 
 	c.Json(w, http.StatusCreated,
-		fmt.Sprintf("%s registered successfully. Please verify your email.", roleName),
+		fmt.Sprintf("%s registered successfully.", roleName),
 		response)
-
 }

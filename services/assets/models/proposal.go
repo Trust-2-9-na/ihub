@@ -61,6 +61,8 @@ type Proposal struct {
 	Cohort    *Cohort                   `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
 	Category  string                    `gorm:"size:100;index" json:"category"`
 	Subfield  *string                   `gorm:"size:100" json:"subfield,omitempty"`
+
+	ProposalReviews []ProposalReview `gorm:"foreignKey:RelatedProposalID;references:ProposalID" json:"proposal_reviews,omitempty"`
 }
 
 //
@@ -68,17 +70,17 @@ type Proposal struct {
 //
 
 type ProposalReview struct {
-	ReviewID     uint64         `gorm:"primaryKey;autoIncrement" json:"review_id"`
-	ProposalID   uint64         `gorm:"not null;index" json:"proposal_id"`
-	Proposal     *Proposal      `gorm:"foreignKey:ProposalID;references:ProposalID" json:"proposal,omitempty"`
-	ReviewedByID uint64         `gorm:"not null;index" json:"reviewed_by"`
-	ReviewedBy   *User          `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by_user"`
-	Comments     *string        `gorm:"type:text" json:"comments,omitempty"`
-	Decision     string         `gorm:"type:varchar(20);default:'Pending';index" json:"decision"`
-	ReviewDate   time.Time      `gorm:"autoCreateTime" json:"review_date"`
-	CreatedAt    time.Time      `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt    time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
+	ReviewID          uint64         `gorm:"primaryKey;autoIncrement" json:"review_id"`
+	RelatedProposalID uint64         `gorm:"not null;index" json:"related_proposal_id"`                                            // renamed FK
+	RelatedProposal   *Proposal      `gorm:"foreignKey:RelatedProposalID;references:ProposalID" json:"related_proposal,omitempty"` // renamed relation
+	ReviewedByID      uint64         `gorm:"not null;index" json:"reviewed_by"`
+	ReviewedBy        *User          `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by_user"`
+	Comments          *string        `gorm:"type:text" json:"comments,omitempty"`
+	Decision          string         `gorm:"type:varchar(20);default:'Pending';index" json:"decision"`
+	ReviewDate        time.Time      `gorm:"autoCreateTime" json:"review_date"`
+	CreatedAt         time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt         time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	DeletedAt         gorm.DeletedAt `gorm:"index" json:"-"`
 }
 type SystemHistory struct {
 	HistoryID   uint64         `gorm:"primaryKey;autoIncrement" json:"history_id"`

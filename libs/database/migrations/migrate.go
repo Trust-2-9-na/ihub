@@ -82,39 +82,21 @@ CREATE TABLE IF NOT EXISTS user_teams (
 		return err
 	}
 	// Cohort users (many-to-many)
-	// --- Create cohort_users table ---
-	err = db.Exec(`
-CREATE TABLE IF NOT EXISTS cohort_users (
-    cohort_id BIGINT NOT NULL,
-    user_id BIGINT NOT NULL,
-    role VARCHAR(20) DEFAULT 'Student',
-	created_by BIGINT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (cohort_id, user_id),
-    CONSTRAINT fk_cohortusers_cohort FOREIGN KEY (cohort_id) REFERENCES cohorts(cohort_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_cohortusers_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`).Error
-	if err != nil {
-		log.Fatalf("Migration failed for CohortUsers table: %v", err)
+	// 1️⃣ AutoMigrate CohortUser
+	if err := db.AutoMigrate(&models.CohortUser{}); err != nil {
+		log.Fatalf("Migration failed for CohortUsers: %v", err)
 	}
 
-	// --- Create partial unique index to allow only one supervisor per cohort ---
-	err = db.Exec(`
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_supervisor_per_cohort
-ON cohort_users(cohort_cohort_id)
-WHERE role = 'Supervisor';
-`).Error
-	if err != nil {
-		log.Fatalf("Failed to create partial unique index for supervisors: %v", err)
+	// 2️⃣ Create unique index to prevent duplicate active assignments
+	if err := db.Exec(`
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_user_per_cohort
+	ON cohort_users(cohort_cohort_id, user_user_id)
+	WHERE deleted_at IS NULL;
+`).Error; err != nil {
+		log.Fatalf("Failed to create unique index for cohort assignments: %v", err)
 	}
 
-	log.Println("Migration for cohort_users table completed successfully")
-
-	if err != nil {
-		log.Printf("Migration failed for CohortUsers: %v", err)
-		return err
-	}
+	log.Println("Migration for CohortUsers table completed successfully")
 
 	// 8️⃣ Audit Logs
 	if err := db.AutoMigrate(&models.AuditLog{}); err != nil {
@@ -202,6 +184,22 @@ WHERE role = 'Supervisor';
 		return err
 	}
 	log.Println("email verification table created successfully")
+
+	// 20 password requests migration
+
+	if err := db.AutoMigrate(&models.PasswordRequest{}); err != nil {
+		log.Printf("Migration failed for password request: %v", err)
+		return err
+	}
+	log.Println("password request table created successfully")
+
+	// 21	 migrate password Reset
+
+	if err := db.AutoMigrate(&models.PasswordResetToken{}); err != nil {
+		log.Printf("Migration failed for password reset: %v", err)
+		return err
+	}
+	log.Println("password reset table created successfully")
 
 	log.Println("All migrations ran successfully!")
 

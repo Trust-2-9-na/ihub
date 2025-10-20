@@ -22,6 +22,7 @@ type AdminUserResponse struct {
 	Profile  struct {
 		FirstName string `json:"first_name"`
 		LastName  string `json:"last_name"`
+		AvatarURL string `json:"avatar_url"` // add avatar
 	} `json:"profile"`
 	RoleInfo interface{} `json:"role_info,omitempty"` // Student/Mentor/Supervisor summary
 }
@@ -60,7 +61,9 @@ type SupervisorResponse struct {
 }
 
 // -------------------- GET USERS --------------------
+// -------------------- GET USERS --------------------
 func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
+	// Get authenticated user
 	authUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -73,11 +76,15 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build query with preloads
 	var users []models.User
-	query := c.DB.Preload("Profile").Preload("Role").
-		Preload("StudentProfile").Preload("MentorProfile").Preload("SupervisorProfile")
+	query := c.DB.Preload("Profile").
+		Preload("Role").
+		Preload("StudentProfile").
+		Preload("MentorProfile").
+		Preload("SupervisorProfile")
 
-	// OpsAdmin cannot retrieve SystemAdmins
+	// Restrict OpsAdmin from retrieving SystemAdmins
 	if authUser.Role.Name == "OpsAdmin" {
 		query = query.Joins("JOIN roles ON roles.role_id = users.role_id").
 			Where("LOWER(roles.name) IN ?", []string{"student", "mentor", "supervisor"})
@@ -88,22 +95,30 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prepare response
 	var response []AdminUserResponse
 	for _, u := range users {
 		fullName := u.Profile.FirstName + " " + u.Profile.LastName
 		item := AdminUserResponse{
 			UserID:   u.UserID,
 			UserUUID: u.UserUUID,
-			Username: fullName, // replace username with full name
+			Username: fullName,
 			Email:    u.Email,
 			Role:     u.Role.Name,
 			IsActive: u.IsActive,
 			Profile: struct {
 				FirstName string `json:"first_name"`
 				LastName  string `json:"last_name"`
+				AvatarURL string `json:"avatar_url"`
 			}{
 				FirstName: u.Profile.FirstName,
 				LastName:  u.Profile.LastName,
+				AvatarURL: func() string {
+					if u.Profile.AvatarURL != nil {
+						return *u.Profile.AvatarURL
+					}
+					return ""
+				}(),
 			},
 		}
 
@@ -140,15 +155,16 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 		response = append(response, item)
 	}
 
-	// Audit retrieval
-	c.NotifyAndTrack(authUser.UserID,
+	// Audit log
+	c.NotifyAndTrack(
+		authUser.UserID,
 		"Retrieved Users",
 		fmt.Sprintf("%s retrieved users list", authUser.Profile.FirstName+" "+authUser.Profile.LastName),
 		"Access",
 		"User",
 		nil,
 		"Viewed",
-		false, // set true if you want email notification
+		false, // set true if email notification is needed
 	)
 
 	c.Json(w, http.StatusOK, "Users retrieved successfully", map[string]interface{}{

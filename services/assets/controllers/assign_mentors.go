@@ -70,7 +70,7 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 	// Assign mentor
 	assign := models.CohortUser{
 		CohortID:  body.CohortID,
-		UserID:    body.MentorID,
+		MemberID:  body.MentorID,
 		Role:      "Mentor",
 		CreatedBy: &currentUser.UserID,
 	}
@@ -155,7 +155,7 @@ func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
 	// 🔹 2️⃣ Assign new mentor
 	assign := models.CohortUser{
 		CohortID:  body.CohortID,
-		UserID:    body.NewMentorID,
+		MemberID:  body.NewMentorID,
 		Role:      "Mentor",
 		CreatedBy: &currentUser.UserID,
 	}

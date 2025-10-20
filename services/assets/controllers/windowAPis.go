@@ -10,6 +10,8 @@ import (
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/gorilla/mux"
 )
 
@@ -175,7 +177,6 @@ func (c *Construct) CreateSubmissionWindow(w http.ResponseWriter, r *http.Reques
 }
 
 // ==============================GETALL======================================
-
 func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request) {
 	// 1️⃣ Get user UUID from context
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
@@ -196,18 +197,24 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 
 	role := strings.ToLower(user.Role.Name)
 
-	// 3️⃣ Get query param for archived filter
+	// 3️⃣ Query params
 	showArchived := r.URL.Query().Get("archived") == "true"
+	showInactive := r.URL.Query().Get("inactive") == "true" // 👈 new flag if you want to see inactive too
 
 	var windows []models.ProposalSubmissionWindow
 
 	switch role {
 	case "opsadmin":
-		// OpsAdmin sees all windows, optionally filter archived
+		// OpsAdmin sees all windows, optionally filter archived/inactive
 		query := c.DB.Preload("CreatedBy.Profile")
+
 		if !showArchived {
 			query = query.Where("is_archived = ?", false)
 		}
+		if !showInactive {
+			query = query.Where("is_active = ?", true)
+		}
+
 		if err := query.Find(&windows).Error; err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to fetch windows", map[string]interface{}{"error": err.Error()})
 			return
@@ -217,7 +224,7 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 		c.NotifyAndTrack(
 			user.UserID,
 			"Viewed All Submission Windows",
-			fmt.Sprintf("OpsAdmin %s viewed all submission windows (archived=%v).", user.Username, showArchived),
+			fmt.Sprintf("OpsAdmin %s viewed all submission windows (archived=%v, inactive=%v).", user.Username, showArchived, showInactive),
 			"SubmissionWindowView",
 			"ProposalSubmissionWindow",
 			nil,
@@ -226,25 +233,22 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 		)
 
 	case "student":
-		// Students see windows relevant to them
+		// Students see only active, relevant, and non-archived windows
 		var studentProfile models.StudentProfile
 		if err := c.DB.Where("user_id = ?", user.UserID).First(&studentProfile).Error; err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to fetch student profile", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
-		// Get all windows (filter archived)
+		// Get all active + non-archived windows
 		var allWindows []models.ProposalSubmissionWindow
-		query := c.DB.Preload("CreatedBy.Profile")
-		if !showArchived {
-			query = query.Where("is_archived = ?", false)
-		}
+		query := c.DB.Preload("CreatedBy.Profile").Where("is_archived = ?", false).Where("is_active = ?", true)
 		if err := query.Find(&allWindows).Error; err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to fetch windows", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
-		// Filter manually by student's profile
+		// Filter manually by student’s school, program, and year
 		for _, w := range allWindows {
 			match := true
 			if w.School != nil && *w.School != "" && studentProfile.School != *w.School {
@@ -265,7 +269,7 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 		c.NotifyAndTrack(
 			user.UserID,
 			"Viewed Submission Windows",
-			fmt.Sprintf("Student %s viewed their submission windows (archived=%v).", user.Username, showArchived),
+			fmt.Sprintf("Student %s viewed their active submission windows.", user.Username),
 			"SubmissionWindowView",
 			"ProposalSubmissionWindow",
 			nil,
@@ -286,13 +290,14 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 			"title":       win.Title,
 			"start_date":  win.StartDate.Format("2006-01-02"),
 			"deadline":    win.Deadline.Format("2006-01-02"),
+			"is_active":   win.IsActive,   // 👈 include active flag
+			"is_archived": win.IsArchived, // 👈 include archived flag
 			"created_by":  win.CreatedBy.Profile.FirstName + " " + win.CreatedBy.Profile.LastName,
 			"created_at":  win.CreatedAt.Format("2006-01-02 15:04:05"),
 			"updated_at":  win.UpdatedAt.Format("2006-01-02 15:04:05"),
 			"school":      win.School,
 			"program":     win.Program,
 			"year":        win.YearOfStudy,
-			"is_archived": win.IsArchived,
 		})
 	}
 
@@ -527,4 +532,103 @@ func (c *Construct) ManageSubmissionWindows(w http.ResponseWriter, r *http.Reque
 	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' executed successfully", input.Action), map[string]interface{}{
 		"results": results,
 	})
+}
+
+func (c *Construct) StartSchedulers() {
+	job := cron.New()
+	job.AddFunc("@every 6h", func() {
+		c.CheckSubmissionWindows()
+	})
+	job.Start()
+	fmt.Println("✅ Proposal submission window scheduler started (runs every 6 hours)")
+}
+
+func (c *Construct) CheckSubmissionWindows() {
+	now := time.Now()
+
+	var windows []models.ProposalSubmissionWindow
+	if err := c.DB.Where("is_archived = ?", false).Find(&windows).Error; err != nil {
+		fmt.Println("❌ Failed to fetch submission windows:", err)
+		return
+	}
+
+	for _, window := range windows {
+		// Check for before and after deadline notifications
+		c.handleWindowLifecycle(&window, now)
+	}
+}
+
+func (c *Construct) handleWindowLifecycle(window *models.ProposalSubmissionWindow, now time.Time) {
+	// Ensure we have LastNotifiedStatus (add this field to ProposalSubmissionWindow)
+	lastStatus := window.LastNotifiedStatus
+
+	// Map notification schedule to statusText
+	notifications := []struct {
+		durationBefore time.Duration
+		statusText     string
+	}{
+		{7 * 24 * time.Hour, "1 Week Reminder"},
+		{48 * time.Hour, "Upcoming Deadline"},
+		{24 * time.Hour, "Deadline Today"},
+	}
+
+	// Notify before deadline
+	for _, n := range notifications {
+		if now.After(window.Deadline.Add(-n.durationBefore)) && now.Before(window.Deadline) && lastStatus != n.statusText {
+			c.notifyWindowStatus(window, n.statusText)
+			window.LastNotifiedStatus = n.statusText
+			c.DB.Save(&window)
+			return
+		}
+	}
+
+	// Notify after deadline
+	if now.After(window.Deadline) && !window.IsArchived && lastStatus != "Closed" {
+		c.notifyWindowStatus(window, "Closed")
+		window.IsArchived = true
+		window.LastNotifiedStatus = "Closed"
+		c.DB.Save(&window)
+	}
+}
+
+func (c *Construct) notifyWindowStatus(window *models.ProposalSubmissionWindow, statusText string) {
+	var students []models.User
+
+	// Filter by matching School, Program, and YearOfStudy
+	query := c.DB.Joins("JOIN student_profiles sp ON sp.user_id = users.user_id")
+	if window.School != nil {
+		query = query.Where("sp.school = ?", *window.School)
+	}
+	if window.Program != nil {
+		query = query.Where("sp.program = ?", *window.Program)
+	}
+	if window.YearOfStudy != nil {
+		query = query.Where("sp.year_of_study = ?", *window.YearOfStudy)
+	}
+
+	if err := query.Find(&students).Error; err != nil {
+		fmt.Println("❌ Failed to fetch students for window:", window.WindowID, err)
+		return
+	}
+
+	// Map statusText to professional message
+	messageMap := map[string]string{
+		"1 Week Reminder":   fmt.Sprintf("The submission window '%s' will close in 1 week. Please submit your proposals on time.", window.Title),
+		"Upcoming Deadline": fmt.Sprintf("The submission window '%s' is closing in 2 days. Submit your proposals soon.", window.Title),
+		"Deadline Today":    fmt.Sprintf("The submission window '%s' closes today. Make sure to submit your proposals before the deadline.", window.Title),
+		"Closed":            fmt.Sprintf("The submission window '%s' is now closed. No further submissions are allowed.", window.Title),
+	}
+
+	for _, user := range students {
+		c.NotifyAndTrack(
+			user.UserID,
+			fmt.Sprintf("%s Submission Window", statusText),
+			messageMap[statusText],
+			"SubmissionWindow",
+			"ProposalSubmissionWindow",
+			&window.WindowID,
+			statusText,
+			true,
+		)
+	}
 }

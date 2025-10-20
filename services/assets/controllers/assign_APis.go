@@ -71,7 +71,7 @@ func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Requ
 	// Assign supervisor (soft-delete is not needed here, just create)
 	assign := models.CohortUser{
 		CohortID: body.CohortCohortID,
-		UserID:   body.UserUserID,
+		MemberID: body.UserUserID,
 		Role:     "Supervisor",
 	}
 	if err := c.DB.Create(&assign).Error; err != nil {
@@ -161,7 +161,7 @@ func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Re
 	// --- Assign new supervisor ---
 	newAssign := models.CohortUser{
 		CohortID: body.CohortCohortID,
-		UserID:   body.NewUserID,
+		MemberID: body.NewUserID,
 		Role:     "Supervisor",
 	}
 	if err := c.DB.Create(&newAssign).Error; err != nil {
@@ -267,7 +267,7 @@ func (c *Construct) UnassignSupervisorFromCohort(w http.ResponseWriter, r *http.
 	// --- Fetch supervisor details ---
 	var supervisor models.User
 	supervisorFullName := "Unknown"
-	if err := c.DB.Preload("Profile").First(&supervisor, "user_id = ?", supervisorAssignment.UserID).Error; err == nil {
+	if err := c.DB.Preload("Profile").First(&supervisor, "user_id = ?", supervisorAssignment.MemberID).Error; err == nil {
 		supervisorFullName = strings.TrimSpace(supervisor.Profile.FirstName + " " + supervisor.Profile.LastName)
 	}
 

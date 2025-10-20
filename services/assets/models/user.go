@@ -25,7 +25,7 @@ type Permission struct {
 type User struct {
 	UserID        uint64   `json:"user_id" gorm:"primaryKey;autoIncrement"`
 	UserUUID      string   `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
-	Username      string   `json:"username" gorm:"size:50;uniqueIndex;not null"` // new field
+	Username      string   `json:"username" gorm:"size:50;uniqueIndex;not null"`
 	Email         string   `json:"email" gorm:"size:150;unique;not null"`
 	PasswordHash  string   `json:"-" gorm:"column:password_hash;size:255;not null"`
 	RoleID        uint     `json:"role_id"`

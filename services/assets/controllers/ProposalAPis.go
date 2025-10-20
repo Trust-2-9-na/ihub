@@ -14,6 +14,7 @@ import (
 	"github.com/gorilla/mux"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+	"gorm.io/gorm"
 )
 
 type ProposalSummary struct {
@@ -57,13 +58,6 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	// ─── Validate Document Type ────────────────────────────────
 	if payload.Document != nil && *payload.Document != "" {
 		allowedExts := []string{".pdf", ".docx"}
-		allowedMIMEs := []string{
-			"application/pdf",
-			"application/msword",
-			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		}
-
-		// --- Extension validation ---
 		validExt := false
 		for _, ext := range allowedExts {
 			if strings.HasSuffix(strings.ToLower(*payload.Document), ext) {
@@ -71,136 +65,87 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-
 		if !validExt {
 			http.Error(w, "invalid document type: only PDF and DOCX files are allowed", http.StatusBadRequest)
 			return
 		}
-
-		// --- MIME type validation (only if file bytes available) ---
-		file, _, err := r.FormFile("document")
-		if err == nil {
-			defer file.Close()
-			buf := make([]byte, 512)
-			_, _ = file.Read(buf)
-			mimeType := http.DetectContentType(buf)
-
-			validMime := false
-			for _, m := range allowedMIMEs {
-				if mimeType == m {
-					validMime = true
-					break
-				}
-			}
-
-			if !validMime {
-				http.Error(w, "invalid file content type", http.StatusBadRequest)
-				return
-			}
-		}
 	}
 
-	// ─── Get User from Context ────────────────────────────────
+	// ─── Get user from context ───────────────────────────────
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
+
 	var user models.User
-	if err := c.DB.Preload("Profile").First(&user, "user_uuid = ?", userUUID).Error; err != nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
+	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch user", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// ─── Validate Window ───────────────────────────────────────
+	// ─── Validate Submission Window ─────────────────────────
 	var window models.ProposalSubmissionWindow
 	if err := c.DB.First(&window, "window_id = ?", payload.WindowID).Error; err != nil {
 		http.Error(w, "submission window not found", http.StatusBadRequest)
 		return
 	}
 
-	// ─── Validate Team ─────────────────────────────────────────
-	if payload.TeamID != nil {
-		var team models.Team
-		if err := c.DB.First(&team, "team_id = ?", *payload.TeamID).Error; err != nil {
-			http.Error(w, "team not found", http.StatusBadRequest)
-			return
-		}
-	}
-
-	// ─── Determine Status ─────────────────────────────────────
-	status := models.ProposalStatusDraft
-	var submissionDate *time.Time
-	if payload.Submit {
-		status = models.ProposalStatusSubmitted
-		t := time.Now()
-		submissionDate = &t
-	}
-
-	// ─── Create Proposal Record ────────────────────────────────
-	proposal := models.Proposal{
-		Title:          payload.Title,
-		Abstract:       payload.Abstract,
-		DocumentURL:    payload.Document,
-		Category:       payload.Category,
-		Subfield:       payload.Subfield,
-		SubmittedByID:  user.UserID,
-		TeamID:         payload.TeamID,
-		WindowID:       payload.WindowID,
-		Status:         status,
-		SubmissionDate: submissionDate,
-	}
-
-	if err := c.DB.Create(&proposal).Error; err != nil {
-		http.Error(w, "failed to create proposal", http.StatusInternalServerError)
+	now := time.Now()
+	if now.Before(window.StartDate) || now.After(window.Deadline) || window.IsArchived {
+		http.Error(w, "submission window is not active", http.StatusBadRequest)
 		return
 	}
 
-	// ─── Track History ─────────────────────────────────────────
-	comment := ""
-	if payload.Submit {
-		comment = fmt.Sprintf("Submitted proposal: %s", proposal.Title)
+	// ─── Create Proposal ─────────────────────────────────────
+	proposal := models.Proposal{
+		Title:         payload.Title,
+		Abstract:      payload.Abstract,
+		DocumentURL:   payload.Document,
+		Category:      payload.Category,
+		Subfield:      payload.Subfield,
+		TeamID:        payload.TeamID,
+		WindowID:      payload.WindowID,
+		Status:        "Submitted",
+		SubmittedByID: user.UserID,
 	}
 
+	if err := c.DB.Create(&proposal).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to create proposal", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// ─── Create ProgressEntity for tracking ──────────────────
+
+	progressEntity := models.ProgressEntity{
+		CohortID:     nil, // optional: can link to cohort if available
+		AssignedToID: &user.UserID,
+		EntityName:   proposal.Title,
+		EntityType:   "Proposal",
+		Status:       "Submitted",
+		ProgressType: "Milestone",
+	}
+	if err := c.DB.Create(&progressEntity).Error; err != nil {
+		fmt.Println("❌ Failed to create progress entity:", err)
+	}
+
+	// ─── Optional: Notify user ─────────────────────────────
 	c.NotifyAndTrack(
 		user.UserID,
-		"Proposal Created",
-		comment,
-		"CreateProposal",
+		"Proposal Submitted",
+		fmt.Sprintf("Your proposal '%s' has been submitted successfully.", proposal.Title),
 		"Proposal",
-		&proposal.ProposalID,
-		status,
+		"ProgressEntity",
+		&progressEntity.ID,
+		"Submitted",
 		true,
 	)
-	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
-	if payload.Submit {
-		var opsAdmins []models.User
-		if err := c.DB.Joins("Role").Where("roles.name = ?", "OpsAdmin").Find(&opsAdmins).Error; err == nil {
-			for _, ops := range opsAdmins {
-				c.NotifyAndTrack(
-					ops.UserID,
-					"New Proposal Submitted",
-					fmt.Sprintf("Student %s submitted a proposal: %s", user.Username, proposal.Title),
-					"Notification",
-					"Proposal",
-					&proposal.ProposalID,
-					status,
-					true,
-				)
-			}
-		}
-	}
 
-	// ─── Response ─────────────────────────────────────────────
-	resp := map[string]interface{}{
-		"message":     "Proposal created successfully",
-		"proposal_id": proposal.ProposalID,
-		"status":      proposal.Status,
-	}
+	c.Json(w, http.StatusOK, "Proposal submitted and tracking created successfully", map[string]interface{}{
+		"proposal_id":        proposal.ProposalID, // use ProposalID here
+		"progress_entity_id": progressEntity.ID,
+	})
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
 }
 
 // ─── UPDATE PROPOSAL ───────────────────────────────────────────
@@ -334,6 +279,50 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	if err := c.DB.Save(&proposal).Error; err != nil {
 		http.Error(w, "failed to update proposal", http.StatusInternalServerError)
 		return
+	}
+
+	// ─── After proposal is saved ───────────────────────────────────────
+	if payload.Submit != nil && *payload.Submit {
+		// Check if a progress entity already exists for this proposal
+		var progressEntity models.ProgressEntity
+		err := c.DB.Where("entity_type = ? AND entity_name = ?", "Proposal", proposal.ProposalID).
+			First(&progressEntity).Error
+
+		if err != nil && err == gorm.ErrRecordNotFound {
+			// Create a new progress entity
+			progressEntity = models.ProgressEntity{
+				EntityName:   fmt.Sprintf("Proposal_%d", proposal.ProposalID),
+				EntityType:   "Proposal",
+				Status:       "Submitted",
+				AssignedToID: &proposal.SubmittedByID,
+				CohortID:     proposal.CohortID, // optional, if you track cohorts
+				ProgressType: "Milestone",
+				IsArchived:   false,
+				Metadata:     nil,
+			}
+			if err := c.DB.Create(&progressEntity).Error; err != nil {
+				fmt.Println("❌ Failed to create progress entity:", err)
+			}
+		} else {
+			// Update existing progress entity
+			progressEntity.Status = "Resubmitted"
+			progressEntity.UpdatedAt = time.Now()
+			if err := c.DB.Save(&progressEntity).Error; err != nil {
+				fmt.Println("❌ Failed to update progress entity:", err)
+			}
+		}
+
+		// Optional: notify the submitter about progress tracking
+		c.NotifyAndTrack(
+			user.UserID,
+			"Proposal Tracking Updated",
+			fmt.Sprintf("Progress tracking created/updated for proposal '%s'", proposal.Title),
+			"ProgressTracking",
+			"Proposal",
+			&proposal.ProposalID,
+			progressEntity.Status,
+			false,
+		)
 	}
 
 	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
