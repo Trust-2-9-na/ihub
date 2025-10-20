@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
+	"web/services/utils"
 )
 
 type UpdateProfileInput struct {
@@ -27,6 +29,7 @@ type UpdateProfileInput struct {
 	Organization *string `json:"organization,omitempty"`
 	Expertise    *string `json:"expertise,omitempty"`
 	YearsExp     *int    `json:"years_exp,omitempty"`
+	Email        *string `json:"email,omitempty"`
 }
 
 //===== GetProfile handles GET /api/profile/{user_id}=====================
@@ -122,21 +125,21 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 // UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	// Extract UUID from JWT context
+	// ✅ Extract UUID from JWT context
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// Parse request body
+	// ✅ Parse request body
 	var input UpdateProfileInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Fetch user by UUID
+	// ✅ Fetch user by UUID
 	var user models.User
 	if err := c.DB.Preload("Profile").
 		Preload("StudentProfile").
@@ -148,9 +151,9 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update main profile
-	// --- Update main profile ---
 	profile := &user.Profile
+
+	// --- Update main profile ---
 	if input.FirstName != nil {
 		profile.FirstName = *input.FirstName
 	}
@@ -180,26 +183,56 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		profile.AvatarURL = input.AvatarURL
 	}
 
-	if err := c.DB.Save(profile).Error; err != nil {
-		// Notification for failure
-		c.NotifyAndTrack(
-			user.UserID,
-			"Profile Update Failed", // Notification/Email title
-			"There was an error updating your profile. Please try again.", // Message
-			"Update",      // Category / Action type
-			"UserProfile", // Entity type
-			&user.UserID,  // Entity ID
-			"Failed",      // Status
-			true,          // Send email (set false if you don't want an email)
-		)
+	// --- Update email with verification ---
+	var verifyURL string
+	if input.Email != nil && *input.Email != user.Email {
+		// Check for duplicate email
+		var existing models.User
+		if err := c.DB.Where("email = ?", *input.Email).First(&existing).Error; err == nil {
+			c.Json(w, http.StatusConflict, "Email already in use", nil)
+			return
+		}
 
-		c.Json(w, http.StatusInternalServerError, "Failed to update profile", map[string]interface{}{"error": err.Error()})
+		user.Email = *input.Email
+		user.EmailVerified = false
+
+		// Create verification token
+		token, _ := utils.GenerateRandomString(32)
+		verification := models.EmailVerification{
+			UserID:    user.UserID,
+			Token:     token,
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+			CreatedAt: time.Now(),
+		}
+		_ = c.DB.Create(&verification)
+
+		// Verification URL
+		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
+
+		// Send verification email asynchronously
+		go func() {
+			body := fmt.Sprintf(`
+				Hello %s %s,<br><br>
+				Your email has been updated. Please verify your email by clicking <a href="%s">here</a>.<br>
+				This link expires in 24 hours.
+			`, profile.FirstName, profile.LastName, verifyURL)
+			_ = c.SendEmailNotification(user.Email, "Verify Your New Email", body)
+		}()
+	}
+
+	// --- Save main profile and user ---
+	if err := c.DB.Save(profile).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to update profile", nil)
+		return
+	}
+	if err := c.DB.Save(&user).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to update user", nil)
 		return
 	}
 
-	// Role-specific updates
-	switch user.RoleID {
-	case 7: // Student
+	// --- Role-specific updates ---
+	switch strings.ToLower(user.Role.Name) {
+	case "student":
 		if user.StudentProfile != nil {
 			if input.School != nil {
 				user.StudentProfile.School = *input.School
@@ -212,7 +245,7 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			c.DB.Save(user.StudentProfile)
 		}
-	case 8: // Mentor
+	case "mentor":
 		if user.MentorProfile != nil {
 			if input.Department != nil {
 				user.MentorProfile.Department = input.Department
@@ -228,7 +261,7 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			c.DB.Save(user.MentorProfile)
 		}
-	case 9: // Supervisor
+	case "supervisor":
 		if user.SupervisorProfile != nil {
 			if input.Department != nil {
 				user.SupervisorProfile.Department = input.Department
@@ -244,34 +277,41 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			c.DB.Save(user.SupervisorProfile)
 		}
+	case "opsadmin", "systemadmin":
+		// No extra fields for now, but you can extend if needed
 	}
 
-	// ✅ Notify user
+	// --- Audit and notification ---
 	c.NotifyAndTrack(
 		user.UserID,
-		"Profile Updated Successfully",                // Notification/Email title
-		"Your profile has been updated successfully.", // Message
-		"Update",      // Category / Action type
-		"UserProfile", // Entity type
-		&user.UserID,  // Entity ID
-		"Updated",     // Status
-		true,          // Send email (set false if you don't want an email)
+		"Profile Updated",
+		"User updated their profile",
+		"Update",
+		"UserProfile",
+		&user.UserID,
+		"Updated",
+		true,
 	)
 
-	// ✅ Audit log
 	ip := r.RemoteAddr
 	action := "update_profile"
 	entity := "user_profile"
 	metadata := map[string]interface{}{
 		"user_id":   user.UserID,
 		"user_uuid": user.UserUUID,
-		"username":  user.Username,
+		"email":     user.Email,
 	}
 	_ = c.LogAudit(user.UserID, action, &entity, &user.UserID, &ip, metadata)
 
-	c.Json(w, http.StatusOK, "Profile updated successfully", map[string]interface{}{
+	// --- Response ---
+	resp := map[string]interface{}{
 		"profile": profile,
-	})
+	}
+	if verifyURL != "" {
+		resp["verify_url"] = verifyURL
+	}
+
+	c.Json(w, http.StatusOK, "Profile updated successfully", resp)
 }
 
 // UpdateAvatar handles uploading/updating a user's avatar with tracking and notifications

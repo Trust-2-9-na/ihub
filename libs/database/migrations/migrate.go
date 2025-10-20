@@ -60,19 +60,8 @@ func Migrate() error {
 		return err
 	}
 	// 6 user teams
-	err := db.Exec(`
-CREATE TABLE IF NOT EXISTS user_teams (
-    user_id BIGINT NOT NULL,
-    team_id BIGINT NOT NULL,
-    role VARCHAR(20) DEFAULT 'Member',
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, team_id),
-    CONSTRAINT fk_userteams_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_userteams_team FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE ON UPDATE CASCADE
-);
-`).Error
-	if err != nil {
-		log.Printf("Migration failed for UserTeams: %v", err)
+	if err := db.AutoMigrate(&models.UserTeam{}); err != nil {
+		log.Printf("Migration failed for User Teams: %v", err)
 		return err
 	}
 

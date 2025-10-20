@@ -9,6 +9,7 @@ import (
 )
 
 // ----------------- CHANGE PASSWORD -----------------
+
 func (c *Construct) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	var input models.PasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -48,9 +49,21 @@ func (c *Construct) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit
-	c.NotifyAndTrack(authUser.UserID, "Password Changed", "User changed their password", "Update", "User", &authUser.UserID, "Updated", true)
+	c.NotifyAndTrack(
+		authUser.UserID,
+		"Password Changed",
+		"You changed Your password",
+		"Update",
+		"User",
+		&authUser.UserID,
+		"Updated",
+		true,
+	)
 
-	c.Json(w, http.StatusOK, "Password changed successfully", nil)
+	// ✅ Return meaningful data
+	c.Json(w, http.StatusOK, "Password changed successfully", map[string]interface{}{
+		"user_id": authUser.UserID,
+	})
 }
 
 // ----------------- FORGOT PASSWORD -----------------

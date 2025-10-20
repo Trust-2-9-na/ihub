@@ -25,7 +25,7 @@ type Permission struct {
 type User struct {
 	UserID        uint64   `json:"user_id" gorm:"primaryKey;autoIncrement"`
 	UserUUID      string   `json:"user_uuid" gorm:"type:uuid;default:uuid_generate_v4();uniqueIndex"`
-	Username      string   `json:"username" gorm:"size:50;uniqueIndex;not null"`
+	Username      string   `json:"username" gorm:"size:50;Index;null"`
 	Email         string   `json:"email" gorm:"size:150;unique;not null"`
 	PasswordHash  string   `json:"-" gorm:"column:password_hash;size:255;not null"`
 	RoleID        uint     `json:"role_id"`
@@ -56,6 +56,7 @@ type UserProfile struct {
 	Address   *string `json:"address,omitempty"`
 	Bio       *string `json:"bio,omitempty"`
 	AvatarURL *string `json:"avatar_url,omitempty"`
+	Email     *string `json:"email,omitempty"`
 }
 
 // FullName returns the full name of the user

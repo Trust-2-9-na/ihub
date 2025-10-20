@@ -25,7 +25,6 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	api.HandleFunc("/login", c.Login).Methods("POST")
 	api.HandleFunc("/signup/student", c.SignupStudent).Methods("POST")
 	api.HandleFunc("/signup/mentor", c.SignupMentor).Methods("POST")
-	api.HandleFunc("/signup/supervisor", c.SignupSupervisor).Methods("POST")
 
 	// google authentication routes
 	api.HandleFunc("/signup/student/google", c.GoogleSignupStudent).Methods("POST")
@@ -54,10 +53,15 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Users & Roles
 	admin.Handle("/users", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"})(http.HandlerFunc(c.GetUsers))).Methods("GET")
+	admin.Handle("/user/create", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.AdminCreateUser))).Methods("POST")
+	admin.Handle("/user/create", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.UpdateUserByAdmin))).Methods("PUT")
 	admin.Handle("/students", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	admin.Handle("/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_supervisors")(http.HandlerFunc(c.GetSupervisors))).Methods("GET")
 	admin.Handle("/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_mentors")(http.HandlerFunc(c.GetMentors))).Methods("GET")
 	admin.Handle("/users/status", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ToggleUserStatus))).Methods("PATCH")
+	admin.Handle("/profile", middlewares.RoleAuthorization(db, []string{"SystemAdmin", "OpsAdmin"})(http.HandlerFunc(c.UpdateProfile))).Methods("PUT")
+	admin.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"SyetemAdmin", "OpsAdmin"})(http.HandlerFunc(c.GetProfile))).Methods("POST")
+	admin.Handle("/profile", middlewares.RoleAuthorization(db, []string{"SyetemAdmin", "OpsAdmin"})(http.HandlerFunc(c.GetProfile))).Methods("GET")
 
 	// change user role
 	admin.Handle("/user/{user_id}/roles", middlewares.RoleAuthorization(db, []string{"SystemAdmin"}, "manage_system")(http.HandlerFunc(c.ChangeUserRole))).Methods("PATCH")
