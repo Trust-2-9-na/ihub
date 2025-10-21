@@ -58,7 +58,7 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 
 	feedback := models.MentorFeedback{
 		MentorID:       user.UserID,
-		ReportID:       input.ReportID,
+		MentorReportID: input.ReportID,
 		ItemID:         input.ItemID,
 		StudentID:      input.StudentID,
 		Comment:        input.Comment,
@@ -118,7 +118,7 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		"mentor_id":      feedback.MentorID,
 		"mentor_name":    user.Profile.FirstName + " " + user.Profile.LastName,
 		"student_id":     feedback.StudentID,
-		"report_id":      feedback.ReportID,
+		"report_id":      feedback.MentorReportID,
 		"item_id":        feedback.ItemID,
 		"comment":        feedback.Comment,
 		"rating":         feedback.Rating,
@@ -281,9 +281,9 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, f := range allFeedbacks {
-			if f.Report != nil && f.Report.CohortID != nil {
+			if f.MentorReportProfile != nil && f.MentorReportProfile.ReportCohortID != nil {
 				// dereference pointer safely
-				cohortID := *f.Report.CohortID
+				cohortID := *f.MentorReportProfile.ReportCohortID
 				if c.UserHasCohortAccess(user.UserID, cohortID) {
 					if studentID == 0 || f.StudentID == studentID {
 						feedbacks = append(feedbacks, f)
@@ -319,13 +319,13 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var reportData map[string]interface{}
-		if f.Report != nil && f.Report.Cohort != nil {
+		if f.MentorReportProfile != nil && f.MentorReportProfile.ReportCohortInfo != nil {
 			reportData = map[string]interface{}{
-				"id":          f.Report.ID,
-				"cohort_name": f.Report.Cohort.Name,
-				"week_start":  f.Report.WeekStart,
-				"week_end":    f.Report.WeekEnd,
-				"status":      f.Report.Status,
+				"id":          f.MentorReportProfile.ID,
+				"cohort_name": f.MentorReportProfile.ReportCohortInfo.Name,
+				"week_start":  f.MentorReportProfile.WeekStart,
+				"week_end":    f.MentorReportProfile.WeekEnd,
+				"status":      f.MentorReportProfile.Status,
 			}
 		}
 

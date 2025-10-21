@@ -38,8 +38,14 @@ func (c *Construct) NotifyAndTrack(
 
 	// 2️⃣ Record system history
 	history := &models.SystemHistory{
-		EntityType:  entityType,
-		EntityID:    entityID,
+		EntityType: entityType,
+		EntityID: func() *uint64 {
+			if entityID == nil {
+				defaultID := uint64(0)
+				return &defaultID
+			}
+			return entityID
+		}(),
 		Action:      category,
 		Status:      &status,
 		Comment:     &message,
@@ -47,6 +53,7 @@ func (c *Construct) NotifyAndTrack(
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+
 	if err := c.DB.Create(history).Error; err != nil {
 		log.Printf("[ERROR] Failed to create system history: %v\n", err)
 	}

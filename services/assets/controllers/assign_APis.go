@@ -70,9 +70,9 @@ func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Requ
 
 	// Assign supervisor (soft-delete is not needed here, just create)
 	assign := models.CohortUser{
-		CohortID: body.CohortCohortID,
-		MemberID: body.UserUserID,
-		Role:     "Supervisor",
+		UserCohortID: body.CohortCohortID,
+		MemberID:     body.UserUserID,
+		Role:         "Supervisor",
 	}
 	if err := c.DB.Create(&assign).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to assign supervisor", map[string]interface{}{"error": err.Error()})
@@ -160,9 +160,9 @@ func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Re
 
 	// --- Assign new supervisor ---
 	newAssign := models.CohortUser{
-		CohortID: body.CohortCohortID,
-		MemberID: body.NewUserID,
-		Role:     "Supervisor",
+		UserCohortID: body.CohortCohortID,
+		MemberID:     body.NewUserID,
+		Role:         "Supervisor",
 	}
 	if err := c.DB.Create(&newAssign).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to assign new supervisor", map[string]interface{}{"error": err.Error()})

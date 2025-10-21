@@ -70,8 +70,8 @@ func (c *Construct) GetProgressView(w http.ResponseWriter, r *http.Request) {
 				"subfield":    p.Subfield,
 				"status":      p.Status,
 				"cohort": func() string {
-					if p.Cohort != nil {
-						return p.Cohort.Name
+					if p.ProposalCohort != nil {
+						return p.ProposalCohort.Name
 					}
 					return ""
 				}(),

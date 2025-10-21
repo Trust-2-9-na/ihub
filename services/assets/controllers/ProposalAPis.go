@@ -99,15 +99,15 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 
 	// ─── Create Proposal ─────────────────────────────────────
 	proposal := models.Proposal{
-		Title:         payload.Title,
-		Abstract:      payload.Abstract,
-		DocumentURL:   payload.Document,
-		Category:      payload.Category,
-		Subfield:      payload.Subfield,
-		TeamID:        payload.TeamID,
-		WindowID:      payload.WindowID,
-		Status:        "Submitted",
-		SubmittedByID: user.UserID,
+		Title:          payload.Title,
+		Abstract:       payload.Abstract,
+		DocumentURL:    payload.Document,
+		Category:       payload.Category,
+		Subfield:       payload.Subfield,
+		ProposalTeamID: payload.TeamID,
+		WindowID:       payload.WindowID,
+		Status:         "Submitted",
+		SubmittedByID:  user.UserID,
 	}
 
 	if err := c.DB.Create(&proposal).Error; err != nil {
@@ -118,12 +118,12 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 	// ─── Create ProgressEntity for tracking ──────────────────
 
 	progressEntity := models.ProgressEntity{
-		CohortID:     nil, // optional: can link to cohort if available
-		AssignedToID: &user.UserID,
-		EntityName:   proposal.Title,
-		EntityType:   "Proposal",
-		Status:       "Submitted",
-		ProgressType: "Milestone",
+		EntityCohortID: nil, // optional: can link to cohort if available
+		AssignedToID:   &user.UserID,
+		EntityName:     proposal.Title,
+		EntityType:     "Proposal",
+		Status:         "Submitted",
+		ProgressType:   "Milestone",
 	}
 	if err := c.DB.Create(&progressEntity).Error; err != nil {
 		fmt.Println("❌ Failed to create progress entity:", err)
@@ -266,7 +266,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		proposal.WindowID = *payload.WindowID
 	}
 	if payload.TeamID != nil {
-		proposal.TeamID = payload.TeamID
+		proposal.ProposalTeamID = payload.TeamID
 	}
 
 	// ─── Handle Submission ─────────────────────────────────────────────────────
@@ -291,14 +291,14 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 		if err != nil && err == gorm.ErrRecordNotFound {
 			// Create a new progress entity
 			progressEntity = models.ProgressEntity{
-				EntityName:   fmt.Sprintf("Proposal_%d", proposal.ProposalID),
-				EntityType:   "Proposal",
-				Status:       "Submitted",
-				AssignedToID: &proposal.SubmittedByID,
-				CohortID:     proposal.CohortID, // optional, if you track cohorts
-				ProgressType: "Milestone",
-				IsArchived:   false,
-				Metadata:     nil,
+				EntityName:     fmt.Sprintf("Proposal_%d", proposal.ProposalID),
+				EntityType:     "Proposal",
+				Status:         "Submitted",
+				AssignedToID:   &proposal.SubmittedByID,
+				EntityCohortID: proposal.ProposalCohortID, // optional, if you track cohorts
+				ProgressType:   "Milestone",
+				IsArchived:     false,
+				Metadata:       nil,
 			}
 			if err := c.DB.Create(&progressEntity).Error; err != nil {
 				fmt.Println("❌ Failed to create progress entity:", err)
@@ -369,8 +369,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//=========++++======== GET PRoposals ==============+=+++==================+=======
-
+// =========++++======== GET PRoposals ==============+=+++==================+=======
 func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	// --- Get logged-in user ---
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
@@ -380,8 +379,9 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user models.User
-	if err := c.DB.Preload("Role").Preload("Profile").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		http.Error(w, "User not found", http.StatusUnauthorized)
+	if err := c.DB.Preload("Role").Preload("Profile").
+		Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
 		return
 	}
 
@@ -392,38 +392,39 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 		Preload("SubmittedBy.Profile").
 		Preload("Cohort").
 		Where("archived = ?", false).
-		Order("created_at desc")
+		Order("created_at DESC")
 
 	// --- Role-based filtering ---
-	switch user.Role.Name {
-	case "Student":
-		// Student sees their own proposals including drafts
+	switch strings.ToLower(user.Role.Name) {
+	case "student":
 		query = query.Where("submitted_by_id = ?", user.UserID)
 
-	case "Supervisor":
-		// Supervisors see proposals in their cohorts, excluding drafts
+	case "supervisor":
 		query = query.Where("status != ?", "Draft")
 		var cohortIDs []uint64
 		c.DB.Model(&models.Cohort{}).Where("created_by = ?", user.UserID).Pluck("cohort_id", &cohortIDs)
 		if len(cohortIDs) > 0 {
 			query = query.Where("cohort_id IN ?", cohortIDs)
 		} else {
-			query = query.Where("1 = 0") // no cohorts → no access
+			query = query.Where("1 = 0") // no access
 		}
 
-	case "Admin":
-		// Admins see all non-draft proposals
+	case "admin":
 		query = query.Where("status != ?", "Draft")
+
+	default:
+		c.Json(w, http.StatusForbidden, "You are not allowed to view proposals", nil)
+		return
 	}
 
 	// --- Fetch proposals ---
 	var proposals []models.Proposal
 	if err := query.Find(&proposals).Error; err != nil {
-		http.Error(w, "Failed to fetch proposals", http.StatusInternalServerError)
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch proposals", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// --- Build response types ---
+	// --- Response structs ---
 	type reviewResp struct {
 		ReviewID   uint64  `json:"review_id"`
 		Comments   *string `json:"comments,omitempty"`
@@ -438,8 +439,9 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type teamResp struct {
-		TeamID uint64 `json:"team_id"`
-		Name   string `json:"name"`
+		TeamID  uint64   `json:"team_id"`
+		Name    string   `json:"name"`
+		Members []string `json:"members,omitempty"`
 	}
 
 	type proposalResp struct {
@@ -457,10 +459,10 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 		Cohort      string       `json:"cohort,omitempty"`
 	}
 
-	// --- Build response data ---
-	var resp []proposalResp
+	// --- Build response ---
+	resp := make([]proposalResp, 0, len(proposals))
 	for _, p := range proposals {
-		// Fetch reviews
+		// --- Reviews ---
 		var reviews []models.ProposalReview
 		if err := c.DB.Preload("ReviewedBy.Profile").Where("proposal_id = ?", p.ProposalID).Find(&reviews).Error; err != nil {
 			reviews = []models.ProposalReview{}
@@ -469,10 +471,9 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 		var revs []reviewResp
 		for _, r := range reviews {
 			reviewer := ""
-			if r.ReviewedBy != nil {
+			if r.ReviewedBy != nil && r.ReviewedBy.Profile.FirstName != "" {
 				reviewer = strings.TrimSpace(r.ReviewedBy.Profile.FirstName + " " + r.ReviewedBy.Profile.LastName)
 			}
-
 			revs = append(revs, reviewResp{
 				ReviewID:   r.ReviewID,
 				Comments:   r.Comments,
@@ -482,18 +483,33 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Map team if exists
+		// --- Window ---
+		window := windowResp{Title: "N/A", Deadline: "N/A"}
+		if p.Window != nil {
+			window.Title = p.Window.Title
+			window.Deadline = p.Window.Deadline.Format("2006-01-02")
+		}
+
+		// --- Team ---
 		var team *teamResp
-		if p.Team != nil {
+		if p.ProposalTeam != nil {
+			members := []string{}
+			for _, ut := range p.ProposalTeam.UserTeams {
+				if ut.UserRef.Profile.FirstName != "" {
+					fullName := strings.TrimSpace(ut.UserRef.Profile.FirstName + " " + ut.UserRef.Profile.LastName)
+					members = append(members, fullName)
+				}
+			}
 			team = &teamResp{
-				TeamID: p.Team.TeamID,
-				Name:   p.Team.Name,
+				TeamID:  p.ProposalTeam.TeamID,
+				Name:    p.ProposalTeam.Name,
+				Members: members,
 			}
 		}
 
 		cohortName := ""
-		if p.Cohort != nil {
-			cohortName = p.Cohort.Name
+		if p.ProposalCohort != nil {
+			cohortName = p.ProposalCohort.Name
 		}
 
 		resp = append(resp, proposalResp{
@@ -504,19 +520,17 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 			Subfield:    p.Subfield,
 			Category:    p.Category,
 			Status:      p.Status,
-			Window: windowResp{
-				Title:    p.Window.Title,
-				Deadline: p.Window.Deadline.Format("2006-01-02"),
-			},
-			Team:      team,
-			Reviews:   revs,
-			CreatedAt: p.CreatedAt.Format("2006-01-02"),
-			Cohort:    cohortName,
+			Window:      window,
+			Team:        team,
+			Reviews:     revs,
+			CreatedAt:   p.CreatedAt.Format("2006-01-02"),
+			Cohort:      cohortName,
 		})
 	}
+	c.Json(w, http.StatusOK, "Success", map[string]interface{}{
+		"data": resp,
+	})
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 // ─── ARCHIVE / RESTORE MULTIPLE PROPOSAL ────────────────────────────────
@@ -610,8 +624,8 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 	var updatedProposals []models.Proposal
 	if err := c.DB.Preload("SubmittedBy.Profile").
 		Preload("ArchivedByUser.Profile").
-		Preload("Team.Users.Profile").
-		Preload("Cohort").
+		Preload("ProposalTeam.Users.Profile").
+		Preload("ProposalCohort").
 		Preload("Window").
 		Where("proposal_id IN ?", body.ProposalIDs).
 		Find(&updatedProposals).Error; err != nil {
@@ -638,8 +652,8 @@ func (c *Construct) ArchiveRestoreProposals(w http.ResponseWriter, r *http.Reque
 			"archived_by":  archivedByName,
 			"submitted_by": p.SubmittedBy.Profile.FirstName + " " + p.SubmittedBy.Profile.LastName,
 			"cohort": func() string {
-				if p.Cohort != nil {
-					return p.Cohort.Name
+				if p.ProposalCohort != nil {
+					return p.ProposalCohort.Name
 				}
 				return ""
 			}(),
@@ -793,9 +807,9 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 
 	// --- Base query setup ---
 	query := c.DB.Preload("SubmittedBy.Profile").
-		Preload("Team.Users.Profile").
+		Preload("ProposalTeam.Users.Profile").
 		Preload("Window").
-		Preload("Cohort").
+		Preload("ProposalCohort").
 		Where("archived = ?", false).
 		Order("created_at DESC")
 
@@ -867,16 +881,17 @@ func (c *Construct) GetProposals(w http.ResponseWriter, r *http.Request) {
 		}
 
 		cohortName := ""
-		if p.Cohort != nil {
-			cohortName = p.Cohort.Name
+		if p.ProposalCohort != nil {
+			cohortName = p.ProposalCohort.Name
 		}
 
 		teamName := ""
 		var teamMembers []string
-		if p.Team != nil && p.Team.TeamID != 0 {
-			teamName = p.Team.Name
-			for _, m := range p.Team.Users {
-				name := strings.TrimSpace(m.Profile.FirstName + " " + m.Profile.LastName)
+		if p.ProposalTeam != nil && p.ProposalTeam.TeamID != 0 {
+			teamName = p.ProposalTeam.Name
+			for _, ut := range p.ProposalTeam.UserTeams {
+				u := ut.UserRef
+				name := strings.TrimSpace(u.Profile.FirstName + " " + u.Profile.LastName)
 				if name != "" {
 					teamMembers = append(teamMembers, name)
 				}
@@ -1082,14 +1097,14 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 			"status":          p.Status,
 			"submission_date": p.SubmissionDate,
 			"cohort": func() string {
-				if p.Cohort != nil {
-					return p.Cohort.Name
+				if p.ProposalCohort != nil {
+					return p.ProposalCohort.Name
 				}
 				return ""
 			}(),
 			"team": func() string {
-				if p.Team != nil {
-					return p.Team.Name
+				if p.ProposalTeam != nil {
+					return p.ProposalTeam.Name
 				}
 				return ""
 			}(),

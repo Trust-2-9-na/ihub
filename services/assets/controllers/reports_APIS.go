@@ -148,18 +148,18 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 
 	// Create Weekly Report
 	report := models.WeeklyReport{
-		CohortID:    &input.CohortID,
-		StudentID:   user.UserID,
-		WeekStart:   weekStart,
-		WeekEnd:     weekEnd,
-		WorkDone:    input.WorkDone,
-		PlannedWork: input.PlannedWork,
-		NextWeek:    input.NextWeek,
-		Challenges:  input.Challenges,
-		Status:      "Pending Verification",
-		DocumentURL: documentURL,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ReportCohortID: &input.CohortID,
+		StudentID:      user.UserID,
+		WeekStart:      weekStart,
+		WeekEnd:        weekEnd,
+		WorkDone:       input.WorkDone,
+		PlannedWork:    input.PlannedWork,
+		NextWeek:       input.NextWeek,
+		Challenges:     input.Challenges,
+		Status:         "Pending Verification",
+		DocumentURL:    documentURL,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 
 	if err := c.DB.Create(&report).Error; err != nil {
@@ -200,7 +200,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		"data": map[string]interface{}{
 			"id":             report.ID,
 			"student_id":     report.StudentID,
-			"cohort_id":      report.CohortID,
+			"cohort_id":      report.ReportCohortID,
 			"status":         report.Status,
 			"week_start":     input.WeekStartStr,
 			"week_end":       input.WeekEndStr,
@@ -311,7 +311,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5️⃣ Check cohort access
-	if report.CohortID == nil || !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
+	if report.ReportCohortID == nil || !c.UserHasCohortAccess(user.UserID, *report.ReportCohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
@@ -351,11 +351,11 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	// 7️⃣ Add comment (any cohort member)
 	if input.Comment != nil && *input.Comment != "" {
 		comment := models.WeeklyReportComment{
-			ReportID:   report.ID,
-			EditedByID: &user.UserID,
-			Comment:    *input.Comment,
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
+			WeeklyReportRefID: &report.ID, // <- updated
+			EditedByID:        &user.UserID,
+			Comment:           *input.Comment,
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
 		}
 		if err := c.DB.Create(&comment).Error; err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to add comment", map[string]interface{}{"error": err.Error()})
@@ -431,16 +431,16 @@ func (c *Construct) AddOrReplyReportComment(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check cohort access
-	if !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
+	if !c.UserHasCohortAccess(user.UserID, *report.ReportCohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
 
 	comment := models.WeeklyReportComment{
-		ReportID:   report.ID,
-		EditedByID: &user.UserID,
-		Comment:    input.Comment,
-		CreatedAt:  time.Now(),
+		WeeklyReportRefID: &report.ID,
+		EditedByID:        &user.UserID,
+		Comment:           input.Comment,
+		CreatedAt:         time.Now(),
 	}
 	if err := c.DB.Create(&comment).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to add comment", map[string]interface{}{"error": err.Error()})
@@ -530,7 +530,7 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 	}
 
 	// 5️⃣ Check supervisor access to cohort
-	if !c.UserHasCohortAccess(user.UserID, *report.CohortID) {
+	if !c.UserHasCohortAccess(user.UserID, *report.ReportCohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
@@ -598,11 +598,11 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		// Add optional rejection comment
 		if input.Comment != "" {
 			comment := models.WeeklyReportComment{
-				ReportID:   report.ID,
-				EditedByID: &user.UserID,
-				Comment:    input.Comment,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				WeeklyReportRefID: &report.ID,
+				EditedByID:        &user.UserID,
+				Comment:           input.Comment,
+				CreatedAt:         now,
+				UpdatedAt:         now,
 			}
 			if err := c.DB.Create(&comment).Error; err != nil {
 				c.Json(w, http.StatusInternalServerError, "Failed to create comment", map[string]interface{}{"error": err.Error()})
@@ -671,8 +671,8 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 
 	resp := map[string]interface{}{
 		"id":             report.ID,
-		"cohort_id":      report.CohortID,
-		"cohort_name":    report.Cohort.Name,
+		"cohort_id":      report.ReportCohortID,
+		"cohort_name":    report.ReportCohortInfo.Name,
 		"student_id":     report.StudentID,
 		"student_name":   studentName,
 		"week_start":     report.WeekStart,
@@ -818,8 +818,8 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 			"id":             report.ID,
 			"student_id":     report.StudentID,
 			"student_name":   report.Student.Profile.FullName(),
-			"cohort_id":      report.CohortID,
-			"cohort_name":    report.Cohort.Name,
+			"cohort_id":      report.ReportCohortID,
+			"cohort_name":    report.ReportCohortInfo.Name,
 			"week_start":     report.WeekStart,
 			"week_end":       report.WeekEnd,
 			"status":         report.Status,

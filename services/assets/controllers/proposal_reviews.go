@@ -23,8 +23,8 @@ type CohortUser struct {
 // Assign student to cohort after proposal is approved
 func AssignStudentToCohort(db *gorm.DB, studentID, cohortID uint64) error {
 	cu := models.CohortUser{
-		CohortID: cohortID,
-		MemberID: studentID,
+		UserCohortID: cohortID,
+		MemberID:     studentID,
 	}
 	return db.Create(&cu).Error
 }
@@ -68,7 +68,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 
 	// --- Fetch proposal ---
 	var proposal models.Proposal
-	if err := c.DB.Preload("SubmittedBy.Profile").Preload("Cohort").
+	if err := c.DB.Preload("SubmittedBy.Profile").Preload("ProposalCohort").
 		First(&proposal, "proposal_id = ?", proposalID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.Json(w, http.StatusNotFound, "Proposal not found", nil)
@@ -114,7 +114,7 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Reload proposal for response ---
-	if err := c.DB.Preload("Cohort").Preload("SubmittedBy.Profile").First(&proposal, "proposal_id = ?", proposal.ProposalID).Error; err != nil {
+	if err := c.DB.Preload("ProposalCohort").Preload("SubmittedBy.Profile").First(&proposal, "proposal_id = ?", proposal.ProposalID).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to reload proposal", nil)
 		return
 	}
@@ -138,8 +138,8 @@ func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 			"category": proposal.Category,
 			"status":   proposal.Status,
 			"cohort": func() string {
-				if proposal.Cohort != nil {
-					return proposal.Cohort.Name
+				if proposal.ProposalCohort != nil {
+					return proposal.ProposalCohort.Name
 				}
 				return ""
 			}(),
@@ -163,7 +163,7 @@ func (c *Construct) handleProposalDecision(proposal *models.Proposal, decision s
 		proposal.SubmissionDate = ptrTime(time.Now())
 
 		// Assign cohort if missing
-		if proposal.CohortID == nil {
+		if proposal.ProposalCohortID == nil {
 			if cohortName == nil || *cohortName == "" {
 				fmt.Println("❌ Cohort name required when approving proposal without cohort")
 				return
@@ -173,31 +173,31 @@ func (c *Construct) handleProposalDecision(proposal *models.Proposal, decision s
 				fmt.Println("❌ Cohort not found:", err)
 				return
 			}
-			proposal.CohortID = &cohort.CohortID
-			proposal.Cohort = &cohort
+			proposal.ProposalCohortID = &cohort.CohortID
+			proposal.ProposalCohort = &cohort
 		}
 
 		_ = c.DB.Save(proposal)
-		_ = AssignStudentToCohort(c.DB, proposal.SubmittedByID, *proposal.CohortID)
+		_ = AssignStudentToCohort(c.DB, proposal.SubmittedByID, *proposal.ProposalCohortID)
 
 		// Create ProgressEntity
 		progressEntity := models.ProgressEntity{
-			CohortID:     proposal.CohortID,
-			AssignedToID: &proposal.SubmittedByID,
-			EntityName:   proposal.Title,
-			EntityType:   "Proposal",
-			Status:       "Approved",
-			ProgressType: "Milestone",
+			EntityCohortID: proposal.ProposalCohortID,
+			AssignedToID:   &proposal.SubmittedByID,
+			EntityName:     proposal.Title,
+			EntityType:     "Proposal",
+			Status:         "Approved",
+			ProgressType:   "Milestone",
 		}
 		_ = c.DB.Create(&progressEntity)
 
 		c.NotifyAndTrack(
 			proposal.SubmittedByID,
 			"Cohort Assignment & Progress Tracking",
-			fmt.Sprintf("You have been assigned to cohort '%s' and your proposal is now tracked.", proposal.Cohort.Name),
+			fmt.Sprintf("You have been assigned to cohort '%s' and your proposal is now tracked.", proposal.ProposalCohort.Name),
 			"Cohort Assignment",
 			"Proposal",
-			proposal.CohortID,
+			proposal.ProposalCohortID,
 			"Assigned",
 			true,
 		)
@@ -276,7 +276,7 @@ func (c *Construct) GetReviews(w http.ResponseWriter, r *http.Request) {
 
 	// --- Fetch proposals based on role ---
 	var proposals []models.Proposal
-	query := c.DB.Preload("SubmittedBy.Profile").Preload("Cohort").Where("proposal_id IN ?", proposalIDs)
+	query := c.DB.Preload("SubmittedBy.Profile").Preload("ProposalCohort").Where("proposal_id IN ?", proposalIDs)
 
 	switch roleName {
 	case "admin":
@@ -340,8 +340,8 @@ func (c *Construct) GetReviews(w http.ResponseWriter, r *http.Request) {
 			"email":      p.SubmittedBy.Email,
 		}
 		cohortName := ""
-		if p.Cohort != nil {
-			cohortName = p.Cohort.Name
+		if p.ProposalCohort != nil {
+			cohortName = p.ProposalCohort.Name
 		}
 
 		proposalResp := map[string]interface{}{
@@ -413,7 +413,7 @@ func (c *Construct) GetMyReviews(w http.ResponseWriter, r *http.Request) {
 	var reviews []models.ProposalReview
 	dbQuery := c.DB.Preload("ReviewedBy.Profile").
 		Preload("Proposal.SubmittedBy.Profile").
-		Preload("Proposal.Cohort")
+		Preload("Proposal.ProposalCohort ")
 
 	switch strings.ToLower(user.Role.Name) {
 	case "opsadmin":
@@ -470,8 +470,8 @@ func (c *Construct) GetMyReviews(w http.ResponseWriter, r *http.Request) {
 		}
 
 		cohortName := ""
-		if proposal.Cohort != nil {
-			cohortName = proposal.Cohort.Name
+		if proposal.ProposalCohort != nil {
+			cohortName = proposal.ProposalCohort.Name
 		}
 
 		reviewData := map[string]interface{}{
@@ -542,7 +542,7 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 
 	// --- Step 4: Load proposal ---
 	var proposal models.Proposal
-	if err := c.DB.Preload("Cohort").Preload("SubmittedBy.Profile").
+	if err := c.DB.Preload("ProposalCohort ").Preload("SubmittedBy.Profile").
 		First(&proposal, "proposal_id = ?", proposalID).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.Json(w, http.StatusNotFound, "proposal not found", nil)
@@ -578,7 +578,7 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 		if payload.Decision != nil {
 			review.Decision = *payload.Decision
 
-			if *payload.Decision == models.DecisionApproved && proposal.CohortID == nil {
+			if *payload.Decision == models.DecisionApproved && proposal.ProposalCohortID == nil {
 				if payload.CohortName == nil || *payload.CohortName == "" {
 					c.Json(w, http.StatusBadRequest, "cohort_name is required when approving a proposal without a cohort", nil)
 					return
@@ -588,13 +588,13 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 					c.Json(w, http.StatusBadRequest, "cohort not found", nil)
 					return
 				}
-				proposal.CohortID = &cohort.CohortID
+				proposal.ProposalCohortID = &cohort.CohortID
 
 				// Assign student to cohort
 				c.DB.Create(&models.CohortUser{
-					CohortID: cohort.CohortID,
-					MemberID: proposal.SubmittedByID,
-					Role:     "Student",
+					UserCohortID: cohort.CohortID,
+					MemberID:     proposal.SubmittedByID,
+					Role:         "Student",
 				})
 			}
 
@@ -605,12 +605,12 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 
 			// --- Track progress entity ---
 			progress := models.ProgressEntity{
-				CohortID:     proposal.CohortID,
-				AssignedToID: &proposal.SubmittedByID,
-				EntityName:   proposal.Title,
-				EntityType:   "Proposal",
-				Status:       *payload.Decision,
-				ProgressType: "Milestone",
+				EntityCohortID: proposal.ProposalCohortID,
+				AssignedToID:   &proposal.SubmittedByID,
+				EntityName:     proposal.Title,
+				EntityType:     "Proposal",
+				Status:         *payload.Decision,
+				ProgressType:   "Milestone",
 			}
 			c.DB.Create(&progress)
 		}
@@ -641,7 +641,7 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 		fmt.Sprintf("Your proposal '%s' has new feedback/comments or a decision.", proposal.Title),
 		"Proposal Review",
 		"Proposal",
-		proposal.CohortID,
+		proposal.ProposalCohortID,
 		proposal.Status,
 		true,
 	)
@@ -665,8 +665,8 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 			"category": proposal.Category,
 			"status":   proposal.Status,
 			"cohort": func() string {
-				if proposal.Cohort != nil {
-					return proposal.Cohort.Name
+				if proposal.ProposalCohortID != nil {
+					return proposal.ProposalCohort.Name
 				}
 				return ""
 			}(),

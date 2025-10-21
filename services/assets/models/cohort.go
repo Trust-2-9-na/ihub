@@ -26,12 +26,12 @@ type Cohort struct {
 
 // CohortUser represents the many-to-many relationship between users and cohorts
 type CohortUser struct {
-	CohortID uint64 `gorm:"column:cohort_cohort_id;primaryKey" json:"cohort_id"`
-	MemberID uint64 `gorm:"column:user_user_id;primaryKey" json:"user_id"` // renamed from UserID
-	Role     string `gorm:"size:50" json:"role,omitempty"`                 // "Student", "Mentor", "Supervisor"
+	UserCohortID uint64 `gorm:"column:cohort_cohort_id;primaryKey" json:"cohort_id"` // renamed from CohortID
+	MemberID     uint64 `gorm:"column:user_user_id;primaryKey" json:"user_id"`       // same as before
+	Role         string `gorm:"size:50" json:"role,omitempty"`                       // "Student", "Mentor", "Supervisor"
 
-	Cohort Cohort `gorm:"foreignKey:CohortID;references:CohortID" json:"cohort,omitempty"`
-	Member User   `gorm:"foreignKey:MemberID;references:UserID" json:"member,omitempty"` // renamed from User
+	CohortProfile Cohort `gorm:"foreignKey:UserCohortID;references:CohortID" json:"cohort_profile,omitempty"` // renamed from Cohort
+	Member        User   `gorm:"foreignKey:MemberID;references:UserID" json:"member,omitempty"`
 
 	CreatedBy *uint64 `gorm:"column:created_by"`
 

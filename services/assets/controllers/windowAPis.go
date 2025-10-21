@@ -266,16 +266,19 @@ func (c *Construct) GetSubmissionWindows(w http.ResponseWriter, r *http.Request)
 		}
 
 		// 🔔 Log & track
-		c.NotifyAndTrack(
-			user.UserID,
-			"Viewed Submission Windows",
-			fmt.Sprintf("Student %s viewed their active submission windows.", user.Username),
-			"SubmissionWindowView",
-			"ProposalSubmissionWindow",
-			nil,
-			"Viewed",
-			false,
-		)
+		var activeWindow models.ProposalSubmissionWindow
+		if err := c.DB.Where("is_active = ?", true).First(&activeWindow).Error; err == nil {
+			c.NotifyAndTrack(
+				user.UserID,
+				"Viewed Submission Windows",
+				fmt.Sprintf("Student %s viewed submission window %s.", user.Username, activeWindow.Title),
+				"SubmissionWindowView",
+				"ProposalSubmissionWindow",
+				&activeWindow.WindowID, // ✅ Fix: pass actual entity ID
+				"Viewed",
+				true,
+			)
+		}
 
 	default:
 		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)

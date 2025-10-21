@@ -69,10 +69,10 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 
 	// Assign mentor
 	assign := models.CohortUser{
-		CohortID:  body.CohortID,
-		MemberID:  body.MentorID,
-		Role:      "Mentor",
-		CreatedBy: &currentUser.UserID,
+		UserCohortID: body.CohortID,
+		MemberID:     body.MentorID,
+		Role:         "Mentor",
+		CreatedBy:    &currentUser.UserID,
 	}
 	if err := c.DB.Create(&assign).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to assign mentor", map[string]interface{}{"error": err.Error()})
@@ -154,10 +154,10 @@ func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
 
 	// 🔹 2️⃣ Assign new mentor
 	assign := models.CohortUser{
-		CohortID:  body.CohortID,
-		MemberID:  body.NewMentorID,
-		Role:      "Mentor",
-		CreatedBy: &currentUser.UserID,
+		UserCohortID: body.CohortID,
+		MemberID:     body.NewMentorID,
+		Role:         "Mentor",
+		CreatedBy:    &currentUser.UserID,
 	}
 
 	if err := tx.Create(&assign).Error; err != nil {

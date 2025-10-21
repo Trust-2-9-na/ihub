@@ -11,10 +11,7 @@ import (
 	"time"
 	"web/services/assets/models"
 
-	"gorm.io/datatypes"
-
 	"github.com/gorilla/mux"
-	"gorm.io/gorm"
 )
 
 // calculating performance
@@ -99,7 +96,7 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 			"entity_type":   existing.EntityType,
 			"status":        existing.Status,
 			"progress_type": existing.ProgressType,
-			"cohort_id":     existing.CohortID,
+			"cohort_id":     existing.EntityCohortID,
 		})
 		return
 	}
@@ -110,12 +107,12 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 	}
 
 	entity := models.ProgressEntity{
-		CohortID:     &body.CohortID,
-		EntityName:   cohort.Name,
-		EntityType:   "Cohort",
-		Status:       "Pending",
-		ProgressType: body.ProgressType,
-		AssignedToID: body.AssignedToID,
+		EntityCohortID: &body.CohortID,
+		EntityName:     cohort.Name,
+		EntityType:     "Cohort",
+		Status:         "Pending",
+		ProgressType:   body.ProgressType,
+		AssignedToID:   body.AssignedToID,
 	}
 
 	if err := c.DB.Create(&entity).Error; err != nil {
@@ -214,17 +211,17 @@ func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Req
 			"status":        e.Status,
 			"performance":   e.Performance,
 			"progress_type": e.ProgressType,
-			"cohort_id":     e.CohortID,
+			"cohort_id":     e.EntityCohortID,
 			"assigned_to":   e.AssignedToID,
 			"is_archived":   e.IsArchived,
 			"created_at":    e.CreatedAt,
 			"updated_at":    e.UpdatedAt,
 		}
 
-		if e.Cohort != nil {
-			resp["cohort_name"] = e.Cohort.Name
-			resp["start_date"] = e.Cohort.StartDate
-			resp["end_date"] = e.Cohort.EndDate
+		if e.EntityCohort != nil {
+			resp["cohort_name"] = e.EntityCohort.Name
+			resp["start_date"] = e.EntityCohort.StartDate
+			resp["end_date"] = e.EntityCohort.EndDate
 		}
 
 		response = append(response, resp)
@@ -256,34 +253,47 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		ParentID     *uint64    `json:"parent_id,omitempty"`
 		PhaseName    string     `json:"phase_name"`
 		ProgressType string     `json:"progress_type,omitempty"`
-		Status       string     `json:"status"` // e.g. "Completed", "In Progress", "Pending"
+		Status       string     `json:"status"`
 		Weight       *float64   `json:"weight,omitempty"`
 		DueDate      *time.Time `json:"due_date,omitempty"`
 		AssignedToID *uint64    `json:"assigned_to_id,omitempty"`
+		TeamRefID    uint64     `json:"team_ref_id"`
 	}
 
+	// --- Parse input ---
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-
-	if body.EntityID == 0 || body.PhaseName == "" || body.Status == "" {
-		c.Json(w, http.StatusBadRequest, "entity_id, phase_name, and status are required", nil)
+	if body.EntityID == 0 || body.PhaseName == "" || body.Status == "" || body.TeamRefID == 0 {
+		c.Json(w, http.StatusBadRequest, "entity_id, phase_name, status, and team_ref_id are required", nil)
 		return
 	}
 
+	// --- Get current user ---
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	role := strings.ToLower(currentUser.Role.Name)
-	isStudent := role == "student"
+	// --- Verify user is team leader ---
+	var userTeam models.UserTeam
+	if err := c.DB.Where("team_team_id = ? AND user_user_id = ?", body.TeamRefID, currentUser.UserID).
+		First(&userTeam).Error; err != nil {
+		c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
+		return
+	}
+	if userTeam.Role != string(models.TeamLeader) {
+		c.Json(w, http.StatusForbidden, "Only the team leader can add progress items", nil)
+		return
+	}
 
-	// --- Access control ---
-	if !isStudent && role != "opsadmin" && role != "supervisor" && role != "mentor" {
-		c.Json(w, http.StatusForbidden, "You are not authorized to create progress items", nil)
+	// --- Load team and its users ---
+	var team models.Team
+	if err := c.DB.Preload("UserTeams.UserRef.Profile").
+		Where("team_id = ?", body.TeamRefID).First(&team).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Team not found", nil)
 		return
 	}
 
@@ -294,19 +304,16 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Status and verification logic ---
+	// --- Determine statuses ---
 	studentStatus := body.Status
 	verifiedStatus := "Pending Verification"
-	if !isStudent {
+	if strings.ToLower(currentUser.Role.Name) != "student" {
 		studentStatus = "Completed"
 		verifiedStatus = "Verified"
 	}
 
-	// --- Calculate performance ---
-	performance := calculateItemPerformance(studentStatus, verifiedStatus)
-
-	// --- Determine weight ---
-	var weight float64
+	// --- Calculate weight ---
+	weight := 0.0
 	if body.Weight != nil {
 		weight = *body.Weight
 	} else {
@@ -316,7 +323,6 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 			Where("entity_id = ?", body.EntityID).
 			Select("COALESCE(SUM(weight),0)").Scan(&totalWeight).
 			Count(&count)
-
 		if totalWeight < 1 {
 			weight = math.Max(0, 1-totalWeight)
 		} else {
@@ -331,8 +337,10 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- Create item record ---
+	// --- Create progress item ---
 	item := models.ProgressItem{
+		CohortRefID:    team.CohortRefID,
+		TeamRefID:      &body.TeamRefID,
 		EntityID:       &body.EntityID,
 		ParentID:       body.ParentID,
 		PhaseName:      body.PhaseName,
@@ -340,7 +348,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		StudentStatus:  studentStatus,
 		VerifiedStatus: verifiedStatus,
 		Weight:         weight,
-		Performance:    performance,
+		Performance:    calculateItemPerformance(studentStatus, verifiedStatus),
 		DueDate:        body.DueDate,
 		AssignedToID:   body.AssignedToID,
 		CreatedByID:    currentUser.UserID,
@@ -351,58 +359,50 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Update parent entity performance only when verified ---
+	// --- Notify all team members ---
+	for _, ut := range team.UserTeams {
+		member := ut.UserRef
+		c.NotifyAndTrack(
+			member.UserID,
+			"New Team Progress Item",
+			fmt.Sprintf("A new progress item '%s' has been added to team '%s' by leader %s.",
+				item.PhaseName, team.Name, currentUser.Profile.FirstName),
+			"TeamProgress",
+			"ProgressItem",
+			&item.ID,
+			item.StudentStatus,
+			false,
+		)
+	}
+
+	// --- Recalculate entity performance if verified ---
 	if verifiedStatus == "Verified" {
 		if err := c.RecalculateEntityPerformance(body.EntityID); err != nil {
 			log.Println("Warning: entity performance recalculation failed:", err)
 		}
 	}
 
-	// --- Notify creator ---
-	c.NotifyAndTrack(
-		currentUser.UserID,
-		"Progress Item Created",
-		fmt.Sprintf("%s added '%s' under %s '%s'",
-			currentUser.Username, item.PhaseName, entity.EntityType, entity.EntityName),
-		"Create",
-		entity.EntityType,
-		&item.ID,
-		item.StudentStatus,
-		false,
-	)
-
-	// --- Notify assigned user (if any) ---
-	if body.AssignedToID != nil {
-		c.NotifyAndTrack(
-			*body.AssignedToID,
-			"Assigned to Progress Item",
-			fmt.Sprintf("You have been assigned to '%s' under %s '%s'",
-				item.PhaseName, entity.EntityType, entity.EntityName),
-			"Assignment",
-			entity.EntityType,
-			&item.ID,
-			item.StudentStatus,
-			true,
-		)
+	// --- Build response ---
+	memberCount := len(team.UserTeams)
+	response := map[string]interface{}{
+		"id":              item.ID,
+		"phase_name":      item.PhaseName,
+		"status":          item.StudentStatus,
+		"verified_status": verifiedStatus,
+		"weight":          item.Weight,
+		"performance":     item.Performance,
+		"entity_id":       entity.ID,
+		"entity_name":     entity.EntityName,
+		"entity_type":     entity.EntityType,
+		"team": map[string]interface{}{
+			"team_id":      team.TeamID,
+			"team_name":    team.Name,
+			"leader_name":  currentUser.Profile.FirstName + " " + currentUser.Profile.LastName,
+			"member_count": memberCount,
+		},
 	}
 
-	// --- Response ---
-	c.Json(w, http.StatusCreated, "Progress item created successfully", map[string]interface{}{
-		"data": map[string]interface{}{
-			"id":              item.ID,
-			"phase_name":      item.PhaseName,
-			"status":          item.StudentStatus,
-			"verified_status": verifiedStatus,
-			"weight":          item.Weight,
-			"performance":     item.Performance,
-			"entity_id":       entity.ID,
-			"entity_name":     entity.EntityName,
-			"entity_type":     entity.EntityType,
-			"assigned_to":     body.AssignedToID,
-			"created_by":      currentUser.Username,
-			"progress_type":   item.ProgressType,
-		},
-	})
+	c.Json(w, http.StatusCreated, "Progress item created successfully", map[string]interface{}{"data": response})
 }
 
 // =======++++=======================================================”””””=============
@@ -486,7 +486,7 @@ func (c *Construct) UpdateProgressEntity(w http.ResponseWriter, r *http.Request)
 		entity.IsArchived = *body.IsArchived
 	}
 	if body.CohortID != nil {
-		entity.CohortID = body.CohortID
+		entity.EntityCohortID = body.CohortID
 	}
 	if body.AssignedToID != nil {
 		entity.AssignedToID = body.AssignedToID
@@ -535,7 +535,7 @@ func (c *Construct) UpdateProgressEntity(w http.ResponseWriter, r *http.Request)
 		"performance":   entity.Performance,
 		"progress_type": entity.ProgressType,
 		"is_archived":   entity.IsArchived,
-		"cohort_id":     entity.CohortID,
+		"cohort_id":     entity.EntityCohortID,
 		"assigned_to":   assignedTo,
 	})
 }
@@ -553,8 +553,8 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	var body struct {
 		PhaseName      *string    `json:"phase_name,omitempty"`
-		StudentStatus  *string    `json:"student_status,omitempty"`  // Student updates this
-		VerifiedStatus *string    `json:"verified_status,omitempty"` // Supervisor/admin updates this
+		StudentStatus  *string    `json:"student_status,omitempty"`
+		VerifiedStatus *string    `json:"verified_status,omitempty"`
 		Weight         *float64   `json:"weight,omitempty"`
 		DueDate        *time.Time `json:"due_date,omitempty"`
 		CompletedAt    *time.Time `json:"completed_at,omitempty"`
@@ -578,23 +578,44 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	// --- Fetch progress item ---
 	var item models.ProgressItem
-	if err := c.DB.Preload("Entity").Preload("AssignedTo").First(&item, id).Error; err != nil {
+	if err := c.DB.Preload("Entity").
+		Preload("AssignedTo").
+		Preload("TeamRef.Users.Profile").
+		First(&item, id).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Progress item not found", nil)
 		return
 	}
 
-	// --- Permission checks ---
-	switch role {
-	case "opsadmin", "supervisor", "mentor":
-		// Full access to update anything
-	case "student":
-		if item.CreatedByID != currentUser.UserID && (item.AssignedToID == nil || *item.AssignedToID != currentUser.UserID) {
-			c.Json(w, http.StatusForbidden, "You can only update your own assigned or created items", nil)
+	// --- Team-based permission check ---
+	if item.TeamRefID != nil {
+		var userTeam models.UserTeam
+		err := c.DB.Where("team_ref_id = ? AND user_ref_id = ?", *item.TeamRefID, currentUser.UserID).First(&userTeam).Error
+		if err != nil {
+			c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
 			return
 		}
-	default:
-		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
-		return
+
+		// Allow leader full access, members limited to student updates
+		if role == "student" && userTeam.Role != string(models.TeamLeader) {
+			if item.AssignedToID == nil || *item.AssignedToID != currentUser.UserID {
+				c.Json(w, http.StatusForbidden, "Only the team leader or assigned member can update this item", nil)
+				return
+			}
+		}
+	} else {
+		// --- Non-team item permission checks ---
+		switch role {
+		case "opsadmin", "supervisor", "mentor":
+			// Full access
+		case "student":
+			if item.CreatedByID != currentUser.UserID && (item.AssignedToID == nil || *item.AssignedToID != currentUser.UserID) {
+				c.Json(w, http.StatusForbidden, "You can only update your own assigned or created items", nil)
+				return
+			}
+		default:
+			c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
+			return
+		}
 	}
 
 	// --- Apply updates ---
@@ -615,7 +636,6 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 			item.Performance = 0
 		}
 	}
-
 	if body.Weight != nil {
 		item.Weight = *body.Weight
 	}
@@ -648,15 +668,15 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	// --- Recalculate entity performance if verified ---
 	if item.EntityID != nil && item.VerifiedStatus == "Verified" {
 		if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
-			fmt.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
+			log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
 		}
 	}
 
-	// --- Notifications & audit ---
+	// --- Notify assigned user ---
 	if body.AssignedToID != nil {
 		c.NotifyAndTrack(
 			*body.AssignedToID,
-			"Progress Item Assignment",
+			"Progress Item Assignment Updated",
 			fmt.Sprintf("You have been assigned to progress item '%s' under %s '%s'",
 				item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
 			"Assignment",
@@ -667,6 +687,28 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// --- Notify team members if team item ---
+	if item.TeamRefID != nil {
+		var team models.Team
+		if err := c.DB.Preload("UserTeams.UserRef.Profile").First(&team, *item.TeamRefID).Error; err == nil {
+			for _, ut := range team.UserTeams {
+				member := ut.UserRef
+				c.NotifyAndTrack(
+					member.UserID,
+					"Team Progress Item Updated",
+					fmt.Sprintf("Progress item '%s' in team '%s' was updated by %s.",
+						item.PhaseName, team.Name, currentUser.Username),
+					"TeamProgressUpdate",
+					"ProgressItem",
+					&item.ID,
+					item.StudentStatus,
+					true,
+				)
+			}
+		}
+	}
+
+	// --- Audit log ---
 	c.NotifyAndTrack(
 		currentUser.UserID,
 		"Progress Item Updated",
@@ -716,14 +758,18 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 	}
 
 	role := strings.ToLower(currentUser.Role.Name)
-	if role != "supervisor" {
-		c.Json(w, http.StatusForbidden, "Only supervisors can manage progress items", nil)
+	if role != "supervisor" && role != "opsadmin" {
+		c.Json(w, http.StatusForbidden, "Only supervisors or opsadmins can manage progress items", nil)
 		return
 	}
 
-	// --- Fetch items ---
+	// --- Fetch items (including team info) ---
 	var items []models.ProgressItem
-	if err := c.DB.Preload("Entity").Where("id IN ?", input.ItemIDs).Find(&items).Error; err != nil {
+	if err := c.DB.
+		Preload("Entity").
+		Preload("TeamRef.TeamMembers.User.Profile").
+		Where("id IN ?", input.ItemIDs).
+		Find(&items).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch progress items", map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -733,16 +779,19 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// --- Prepare response lists ---
 	var archivedIDs, unarchivedIDs, deletedIDs []uint64
 
 	for _, item := range items {
-		switch strings.ToLower(input.Action) {
+		action := strings.ToLower(input.Action)
+		now := time.Now()
+
+		switch action {
 		case "archive":
 			item.IsArchived = true
-			item.UpdatedAt = time.Now()
-			c.DB.Save(&item)
-			archivedIDs = append(archivedIDs, item.ID)
+			item.UpdatedAt = now
+			if err := c.DB.Save(&item).Error; err == nil {
+				archivedIDs = append(archivedIDs, item.ID)
+			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Archived",
 				fmt.Sprintf("Progress item '%s' in %s '%s' was archived", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
@@ -753,11 +802,18 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				false,
 			)
 
+			// Notify team members if this is a team item
+			if item.TeamRefID != nil {
+				c.notifyTeamMembers(*item.TeamRefID, fmt.Sprintf("Team progress item '%s' has been archived by %s.",
+					item.PhaseName, currentUser.Username))
+			}
+
 		case "unarchive":
 			item.IsArchived = false
-			item.UpdatedAt = time.Now()
-			c.DB.Save(&item)
-			unarchivedIDs = append(unarchivedIDs, item.ID)
+			item.UpdatedAt = now
+			if err := c.DB.Save(&item).Error; err == nil {
+				unarchivedIDs = append(unarchivedIDs, item.ID)
+			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Unarchived",
 				fmt.Sprintf("Progress item '%s' in %s '%s' was unarchived", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
@@ -768,10 +824,16 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				false,
 			)
 
+			if item.TeamRefID != nil {
+				c.notifyTeamMembers(*item.TeamRefID, fmt.Sprintf("Team progress item '%s' has been restored by %s.",
+					item.PhaseName, currentUser.Username))
+			}
+
 		case "delete":
-			// Supervisors permanently delete
-			c.DB.Unscoped().Delete(&item)
-			deletedIDs = append(deletedIDs, item.ID)
+			// Hard delete (supervisor-only)
+			if err := c.DB.Unscoped().Delete(&item).Error; err == nil {
+				deletedIDs = append(deletedIDs, item.ID)
+			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Deleted Permanently",
 				fmt.Sprintf("Progress item '%s' in %s '%s' was permanently deleted", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
@@ -782,15 +844,20 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 				true,
 			)
 
+			if item.TeamRefID != nil {
+				c.notifyTeamMembers(*item.TeamRefID, fmt.Sprintf("Team progress item '%s' was permanently deleted by %s.",
+					item.PhaseName, currentUser.Username))
+			}
+
 		default:
 			c.Json(w, http.StatusBadRequest, "Invalid action, must be 'archive', 'unarchive', or 'delete'", nil)
 			return
 		}
 
-		// --- Recalculate entity performance only considering verified items ---
+		// --- Recalculate entity performance (if applicable) ---
 		if item.EntityID != nil {
 			if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
-				fmt.Println("Warning: entity recalculation failed for EntityID", *item.EntityID, ":", err)
+				log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
 			}
 		}
 	}
@@ -808,6 +875,28 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed successfully", input.Action), response)
+}
+
+// 🔹 Helper to notify all team members when a team item is managed
+func (c *Construct) notifyTeamMembers(teamRefID uint64, message string) {
+	var team models.Team
+	if err := c.DB.Preload("Users").First(&team, teamRefID).Error; err != nil {
+		return
+	}
+	for _, ut := range team.UserTeams {
+		member := ut.UserRef
+		c.NotifyAndTrack(
+			member.UserID,
+			"Team Progress Item Update",
+			message,
+			"TeamItemManagement",
+			"ProgressItem",
+			nil,
+			"Pending",
+			true,
+		)
+	}
+
 }
 
 //=======++++=======================================================''''''''''=============
@@ -926,228 +1015,8 @@ func (c *Construct) ManageProgressEntities(w http.ResponseWriter, r *http.Reques
 //	Retrieving Cohort Progress API DATA
 //
 // =======++++=======================================================”””””=============
+
 // GET /progress/entities/{id}?page=1&limit=20&report_status=Pending&week_start=2025-10-01&week_end=2025-10-07
-func (c *Construct) GetProgressEntities(w http.ResponseWriter, r *http.Request) {
-	// --- Auth ---
-	currentUser, err := c.GetAuthenticatedUser(r)
-	if err != nil {
-		c.Json(w, http.StatusUnauthorized, fmt.Sprintf("%v", err), nil)
-		return
-	}
-	role := strings.ToLower(currentUser.Role.Name)
-
-	// --- Query Parameters ---
-	entityID, _ := c.GetUintParam(r, "id")
-	var cohortID uint64
-	if cohortStr := r.URL.Query().Get("cohort_id"); cohortStr != "" {
-		fmt.Sscan(cohortStr, &cohortID)
-	}
-
-	page, limit := 1, 20
-	fmt.Sscan(r.URL.Query().Get("page"), &page)
-	fmt.Sscan(r.URL.Query().Get("limit"), &limit)
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 {
-		limit = 20
-	}
-	offset := (page - 1) * limit
-
-	reportStatus := r.URL.Query().Get("report_status")
-	var weekStart, weekEnd time.Time
-	if ws := r.URL.Query().Get("week_start"); ws != "" {
-		weekStart, _ = time.Parse("2006-01-02", ws)
-	}
-	if we := r.URL.Query().Get("week_end"); we != "" {
-		weekEnd, _ = time.Parse("2006-01-02", we)
-	}
-
-	// --- Base Query ---
-	query := c.DB.Model(&models.ProgressEntity{}).
-		Preload("Cohort").
-		Preload("Items.AssignedTo.Profile").
-		Preload("Items.CreatedBy.Profile").
-		Preload("Items.WeeklyReports", func(db *gorm.DB) *gorm.DB {
-			if reportStatus != "" {
-				db = db.Where("status = ?", reportStatus)
-			}
-			if !weekStart.IsZero() {
-				db = db.Where("week_start >= ?", weekStart)
-			}
-			if !weekEnd.IsZero() {
-				db = db.Where("week_end <= ?", weekEnd)
-			}
-			return db.Preload("ProgressItems").Preload("Comments") // preload linked tasks & comments
-		})
-
-	// --- Role-based Filtering ---
-	switch role {
-	case "opsadmin", "systemadmin":
-		if entityID > 0 {
-			query = query.Where("id = ?", entityID)
-		} else if cohortID > 0 {
-			query = query.Where("cohort_id = ?", cohortID)
-		}
-	case "supervisor", "mentor":
-		cohortIDs := c.getAssignedCohorts(currentUser.UserID, strings.Title(role))
-		if len(cohortIDs) == 0 {
-			c.Json(w, http.StatusOK, "No cohorts found", map[string]interface{}{"entities": []interface{}{}})
-			return
-		}
-		query = query.Where("cohort_id IN ?", cohortIDs)
-	case "student":
-		cohortIDs := c.getAssignedCohorts(currentUser.UserID, "Student")
-		if len(cohortIDs) == 0 {
-			c.Json(w, http.StatusOK, "No cohorts found", map[string]interface{}{"entities": []interface{}{}})
-			return
-		}
-		query = query.Where("cohort_id IN ?", cohortIDs).
-			Preload("Items", "created_by_id = ?", currentUser.UserID)
-	default:
-		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
-		return
-	}
-
-	// --- Fetch Entities ---
-	var entities []models.ProgressEntity
-	if err := query.Limit(limit).Offset(offset).Find(&entities).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch entities", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// --- Build Response ---
-	resp := make([]map[string]interface{}, 0, len(entities))
-	for _, e := range entities {
-		entityMap := map[string]interface{}{
-			"id":            e.ID,
-			"entity_name":   e.EntityName,
-			"entity_type":   e.EntityType,
-			"status":        e.Status,
-			"performance":   e.Performance,
-			"progress_type": e.ProgressType,
-			"is_archived":   e.IsArchived,
-			"cohort_id":     e.CohortID,
-		}
-
-		// --- Items ---
-		itemsResp := make([]map[string]interface{}, 0, len(e.Items))
-		for _, item := range e.Items {
-			assignedTo := map[string]interface{}{}
-			if item.AssignedTo != nil {
-				assignedTo = map[string]interface{}{
-					"id":         item.AssignedTo.UserID,
-					"first_name": item.AssignedTo.Profile.FirstName,
-					"last_name":  item.AssignedTo.Profile.LastName,
-					"email":      item.AssignedTo.Email,
-				}
-			}
-
-			createdBy := map[string]interface{}{}
-			if item.CreatedBy != nil {
-				createdBy = map[string]interface{}{
-					"id":         item.CreatedBy.UserID,
-					"first_name": item.CreatedBy.Profile.FirstName,
-					"last_name":  item.CreatedBy.Profile.LastName,
-					"email":      item.CreatedBy.Email,
-				}
-			}
-
-			reportsResp := make([]map[string]interface{}, 0)
-			for _, r := range item.WeeklyReports {
-				linkedItemIDs := make([]uint64, 0)
-				for _, p := range r.ProgressItems {
-					linkedItemIDs = append(linkedItemIDs, p.ID)
-				}
-
-				// derive status considering comments / supervisor verification
-				status := r.Status
-				if status == "Pending" && len(r.Comments) > 0 {
-					for _, cmt := range r.Comments {
-						if strings.ToLower(cmt.Comment) == "needs revision" {
-							status = "Needs Revision"
-							break
-						}
-					}
-				}
-
-				reportsResp = append(reportsResp, map[string]interface{}{
-					"id":              r.ID,
-					"student_id":      r.StudentID,
-					"status":          status,
-					"week_start":      r.WeekStart,
-					"week_end":        r.WeekEnd,
-					"linked_items":    linkedItemIDs,
-					"student_status":  item.StudentStatus,
-					"verified_status": item.VerifiedStatus,
-				})
-			}
-
-			itemsResp = append(itemsResp, map[string]interface{}{
-				"id":              item.ID,
-				"phase_name":      item.PhaseName,
-				"student_status":  item.StudentStatus,
-				"verified_status": item.VerifiedStatus,
-				"weight":          item.Weight,
-				"performance":     item.Performance,
-				"progress_type":   item.ProgressType,
-				"is_archived":     item.IsArchived,
-				"assigned_to":     assignedTo,
-				"created_by":      createdBy,
-				"weekly_reports":  reportsResp,
-			})
-		}
-
-		entityMap["items"] = itemsResp
-		resp = append(resp, entityMap)
-	}
-
-	// --- AUDIT & LOG ACCESS ---
-	go func() {
-		ip := r.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
-		ua := r.UserAgent()
-		meta := fmt.Sprintf(`{"ip":"%s","user_agent":"%s"}`, ip, ua)
-
-		message := fmt.Sprintf(
-			"%s (%s) viewed progress entities (page: %d, limit: %d, cohort_id: %d, entity_id: %d)",
-			currentUser.Username, role, page, limit, cohortID, entityID,
-		)
-
-		// General notification
-		c.NotifyAndTrack(
-			currentUser.UserID,
-			"Progress Entities Viewed",
-			message,
-			"view",
-			"ProgressEntity",
-			nil,
-			"success",
-			false,
-		)
-
-		// Optional DB audit log
-		audit := &models.AuditLog{
-			UserID:    currentUser.UserID,
-			Action:    "view",
-			Entity:    ptrString("ProgressEntity"),
-			EntityID:  nil,
-			Metadata:  datatypes.JSON([]byte(meta)),
-			CreatedAt: time.Now(),
-		}
-		_ = c.DB.Create(audit).Error
-	}()
-
-	// --- Response ---
-	c.Json(w, http.StatusOK, "Fetched progress entities successfully", map[string]interface{}{
-		"page":     page,
-		"limit":    limit,
-		"count":    len(resp),
-		"entities": resp,
-	})
-}
 
 // --- get assigned cohorts helper ---
 func (c *Construct) getAssignedCohorts(userID uint64, role string) []uint64 {

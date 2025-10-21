@@ -60,9 +60,26 @@ func Migrate() error {
 		return err
 	}
 	// 6 user teams
+	// 6️⃣ UserTeams
 	if err := db.AutoMigrate(&models.UserTeam{}); err != nil {
 		log.Printf("Migration failed for User Teams: %v", err)
 		return err
+	}
+
+	// Add 'role' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE user_teams 
+    ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'Member'
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'role' column: %v", err)
+	}
+
+	// Add 'joined_at' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE user_teams 
+    ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP DEFAULT now()
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'joined_at' column: %v", err)
 	}
 
 	// 7️⃣ Cohorts
@@ -74,6 +91,30 @@ func Migrate() error {
 	// 1️⃣ AutoMigrate CohortUser
 	if err := db.AutoMigrate(&models.CohortUser{}); err != nil {
 		log.Fatalf("Migration failed for CohortUsers: %v", err)
+	}
+
+	// Add 'role' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE cohort_users 
+    ADD COLUMN IF NOT EXISTS role VARCHAR(50)
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'role' column to cohort_users: %v", err)
+	}
+
+	// Add 'created_by' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE cohort_users 
+    ADD COLUMN IF NOT EXISTS created_by BIGINT
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'created_by' column to cohort_users: %v", err)
+	}
+
+	// Add 'deleted_at' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE cohort_users 
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'deleted_at' column to cohort_users: %v", err)
 	}
 
 	// 2️⃣ Create unique index to prevent duplicate active assignments

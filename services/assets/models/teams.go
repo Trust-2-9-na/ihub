@@ -8,19 +8,29 @@ import (
 
 // ─── TEAM MODEL ───────────────────────────────────────────────────────────────
 
+type TeamRole string
+
+const (
+	TeamLeader TeamRole = "TeamLeader"
+	Member     TeamRole = "Member"
+)
+
 type Team struct {
-	TeamID      uint64         `gorm:"primaryKey;autoIncrement" json:"team_id"`
-	Name        string         `gorm:"size:100;not null;uniqueIndex" json:"name"`
-	Description string         `gorm:"size:255" json:"description,omitempty"`
-	CohortID    *uint64        `json:"cohort_id,omitempty"` // link to Cohort
-	CreatedAt   time.Time      `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
-	Users       []User         `gorm:"many2many:user_teams;"`
+	TeamID        uint64  `gorm:"primaryKey;autoIncrement" json:"team_id"`
+	Name          string  `gorm:"size:100;not null;Index" json:"name"`
+	Description   string  `gorm:"size:255" json:"description,omitempty"`
+	CohortRefID   *uint64 `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_ref_id,omitempty"`
+	CohortDetails *Cohort `gorm:"foreignKey:CohortRefID;references:CohortID" json:"cohort_details,omitempty"`
+
+	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
+	UserTeams  []UserTeam     `gorm:"foreignKey:TeamRefID" json:"user_teams,omitempty"`
+	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 }
 type UserTeam struct {
-	UserRefID uint64    `gorm:"primaryKey;column:user_ref_id"`
-	TeamRefID uint64    `gorm:"primaryKey;column:team_ref_id"`
+	TeamRefID uint64    `gorm:"column:team_team_id;primaryKey" json:"team_ref_id"` // renamed for clarity
+	UserRefID uint64    `gorm:"column:user_user_id;primaryKey" json:"user_ref_id"`
 	Role      string    `gorm:"type:varchar(20);default:'Member'"`
 	JoinedAt  time.Time `gorm:"autoCreateTime"`
 
