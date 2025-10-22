@@ -35,92 +35,138 @@ type UpdateProfileInput struct {
 //===== GetProfile handles GET /api/profile/{user_id}=====================
 
 func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
-	// Get authenticated user UUID from context (JWT middleware)
+	// --- Get authenticated user UUID from context (JWT middleware) ---
 	viewerUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || viewerUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// Get target user_id from query or URL
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		c.Json(w, http.StatusBadRequest, "Missing user_id", nil)
+	// --- Fetch the viewer (current user) ---
+	var viewer models.User
+	if err := c.DB.Preload("Role").First(&viewer, "user_uuid = ?", viewerUUID).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "Viewer not found", nil)
 		return
 	}
-	userID, err := strconv.ParseUint(userIDStr, 10, 64)
-	if err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid user_id", nil)
-		return
+	roleName := strings.ToLower(viewer.Role.Name)
+
+	// --- Get query parameters ---
+	userIDsStr := r.URL.Query().Get("user_id")
+	roleFilter := r.URL.Query().Get("role")          // e.g., "student"
+	fullNameFilter := r.URL.Query().Get("full_name") // e.g., "John Doe"
+
+	// --- Parse user_ids (comma-separated) ---
+	userIDs := []uint64{}
+	if userIDsStr != "" {
+		for _, idStr := range strings.Split(userIDsStr, ",") {
+			idStr = strings.TrimSpace(idStr)
+			if idStr == "" {
+				continue
+			}
+			id, err := strconv.ParseUint(idStr, 10, 64)
+			if err != nil {
+				c.Json(w, http.StatusBadRequest, "Invalid user_id: "+idStr, nil)
+				return
+			}
+			userIDs = append(userIDs, id)
+		}
 	}
 
-	// Fetch user with related profiles
-	var user models.User
-	if err := c.DB.
+	// --- Build base DB query ---
+	dbQuery := c.DB.Model(&models.User{}).
 		Preload("Profile").
 		Preload("StudentProfile").
 		Preload("MentorProfile").
-		Preload("SupervisorProfile").
-		First(&user, "user_id = ?", userID).Error; err != nil {
-		c.Json(w, http.StatusNotFound, "User not found", map[string]interface{}{"error": err.Error()})
+		Preload("SupervisorProfile")
+
+	// --- Apply filters ---
+	if len(userIDs) > 0 {
+		dbQuery = dbQuery.Where("user_id IN ?", userIDs)
+	} else if roleName != "systemadmin" && roleName != "opsadmin" {
+		// Non-admins can only fetch themselves
+		dbQuery = dbQuery.Where("user_id = ?", viewer.UserID)
+	}
+
+	if roleFilter != "" {
+		roleFilter = strings.ToLower(roleFilter)
+		dbQuery = dbQuery.Joins("JOIN roles ON roles.role_id = users.role_id").
+			Where("LOWER(roles.name) = ?", roleFilter)
+	}
+
+	if fullNameFilter != "" {
+		fullNameFilter = strings.ToLower(fullNameFilter)
+		dbQuery = dbQuery.Joins("JOIN user_profiles ON user_profiles.user_id = users.user_id").
+			Where("LOWER(CONCAT(user_profiles.first_name, ' ', user_profiles.last_name)) LIKE ?", "%"+fullNameFilter+"%")
+	}
+
+	// --- Execute query ---
+	var users []models.User
+	if err := dbQuery.Find(&users).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Users not found", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Build base response
-	resp := map[string]interface{}{
-		"user_id":    user.UserID,
-		"email":      user.Email,
-		"first_name": user.Profile.FirstName,
-		"last_name":  user.Profile.LastName,
-		"phone":      user.Profile.Phone,
-		"address":    user.Profile.Address,
-		"bio":        user.Profile.Bio,
-		"avatar_url": user.Profile.AvatarURL, // include profile pic
+	if len(users) == 0 {
+		c.Json(w, http.StatusNotFound, "No matching users found", nil)
+		return
 	}
 
-	// Add role-specific info
-	if user.StudentProfile != nil {
-		resp["student"] = map[string]interface{}{
-			"school":        user.StudentProfile.School,
-			"program":       user.StudentProfile.Program,
-			"year_of_study": user.StudentProfile.YearOfStudy,
+	// --- Build response ---
+	profiles := []map[string]interface{}{}
+	for _, user := range users {
+		resp := map[string]interface{}{
+			"user_id":    user.UserID,
+			"email":      user.Email,
+			"first_name": user.Profile.FirstName,
+			"last_name":  user.Profile.LastName,
+			"phone":      user.Profile.Phone,
+			"address":    user.Profile.Address,
+			"bio":        user.Profile.Bio,
+			"avatar_url": user.Profile.AvatarURL,
 		}
-	}
-	if user.MentorProfile != nil {
-		resp["mentor"] = map[string]interface{}{
-			"department":   user.MentorProfile.Department,
-			"organization": user.MentorProfile.Organization,
-			"expertise":    user.MentorProfile.Expertise,
-			"years_exp":    user.MentorProfile.YearsExp,
-		}
-	}
-	if user.SupervisorProfile != nil {
-		resp["supervisor"] = map[string]interface{}{
-			"department":   user.SupervisorProfile.Department,
-			"organization": user.SupervisorProfile.Organization,
-			"expertise":    user.SupervisorProfile.Expertise,
-			"years_exp":    user.SupervisorProfile.YearsExp,
-		}
-	}
 
-	// Track view if viewer is not the same as the profile owner
-	if viewerUUID != user.UserUUID {
-		var viewer models.User
-		if err := c.DB.First(&viewer, "user_uuid = ?", viewerUUID).Error; err == nil {
+		if user.StudentProfile != nil {
+			resp["student"] = map[string]interface{}{
+				"school":        user.StudentProfile.School,
+				"program":       user.StudentProfile.Program,
+				"year_of_study": user.StudentProfile.YearOfStudy,
+			}
+		}
+		if user.MentorProfile != nil {
+			resp["mentor"] = map[string]interface{}{
+				"department":   user.MentorProfile.Department,
+				"organization": user.MentorProfile.Organization,
+				"expertise":    user.MentorProfile.Expertise,
+				"years_exp":    user.MentorProfile.YearsExp,
+			}
+		}
+		if user.SupervisorProfile != nil {
+			resp["supervisor"] = map[string]interface{}{
+				"department":   user.SupervisorProfile.Department,
+				"organization": user.SupervisorProfile.Organization,
+				"expertise":    user.SupervisorProfile.Expertise,
+				"years_exp":    user.SupervisorProfile.YearsExp,
+			}
+		}
+
+		profiles = append(profiles, resp)
+
+		// --- Track view if viewer is not the same as the profile owner ---
+		if viewer.UserID != user.UserID {
 			c.NotifyAndTrack(
 				viewer.UserID,
 				"Profile Viewed",
 				fmt.Sprintf("You viewed %s's profile.", user.Profile.FirstName),
-				"View",        // Action type
-				"UserProfile", // Entity type
-				&user.UserID,  // Entity ID
-				"Viewed",      // Status
-				false,         // Do not send email
+				"View",
+				"UserProfile",
+				&user.UserID,
+				"Viewed",
+				false,
 			)
 		}
 	}
 
-	c.Json(w, http.StatusOK, "Profile fetched successfully", map[string]interface{}{"profile": resp})
+	c.Json(w, http.StatusOK, "Profile(s) fetched successfully", map[string]interface{}{"profiles": profiles})
 }
 
 // UpdateProfile updates the currently logged-in user's profile

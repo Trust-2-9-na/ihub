@@ -22,6 +22,8 @@ type Team struct {
 	CohortRefID   *uint64 `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_ref_id,omitempty"`
 	CohortDetails *Cohort `gorm:"foreignKey:CohortRefID;references:CohortID" json:"cohort_details,omitempty"`
 
+	CreatedByID uint64 `gorm:"not null;index" json:"created_by_id"` // New field for tracking creator
+
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`

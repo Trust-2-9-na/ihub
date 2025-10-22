@@ -92,9 +92,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Cohort Assignments
 	admin.Handle("/students/remove", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.RemoveStudentFromCohort))).Methods("DELETE")
-	admin.Handle("/assign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.AssignSupervisorToCohort))).Methods("POST")
-	admin.Handle("/reassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.ReassignSupervisorToCohort))).Methods("PUT")
-	admin.Handle("/unassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.UnassignSupervisorFromCohort))).Methods("DELETE")
+	admin.Handle("/assign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.AssignSupervisorsToCohort))).Methods("POST")
+	admin.Handle("/reassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.ReassignSupervisorsToCohort))).Methods("PUT")
+	admin.Handle("/unassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.UnassignSupervisorsFromCohort))).Methods("DELETE")
 	admin.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
 	admin.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
 
@@ -111,8 +111,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_cohorts")(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
 	admin.Handle("/tracking/progress/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_cohorts")(http.HandlerFunc(c.UpdateProgressEntity))).Methods("PUT")
 	admin.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_cohorts")(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
-	admin.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	admin.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
 	admin.Handle("/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortProgressEntities))).Methods("GET")
+	admin.Handle("/item/progress", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 	admin.Handle("/mange/entities", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ManageProgressEntities))).Methods("DELETE")
 	admin.Handle("/manage/items", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
@@ -165,7 +166,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	//progress tracking
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.CreateCohortProgressEntity))).Methods("POST")
 	supervisor.Handle("/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
-	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
+	supervisor.Handle("/item/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 	supervisor.Handle("/tracking/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressEntity))).Methods("PUT")
 	supervisor.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
@@ -173,10 +175,14 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Cohort Mentor Assignments
 	supervisor.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
-	supervisor.Handle("/assign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignMentorToCohort))).Methods("POST")
-	supervisor.Handle("/reassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ReassignMentor))).Methods("PUT")
-	supervisor.Handle("/unassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UnassignMentor))).Methods("DELETE")
+	supervisor.Handle("/assign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignMentorsToCohort))).Methods("POST")
+	supervisor.Handle("/reassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ReassignMentors))).Methods("PUT")
+	supervisor.Handle("/unassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UnassignMentors))).Methods("DELETE")
 	supervisor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
+
+	//Student Mentor Assignments
+	supervisor.Handle("/assign", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignStudentsToMentor))).Methods("POST")
+	supervisor.Handle("/assign", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignSupervisorsToTeam))).Methods("POST")
 
 	// team management
 	supervisor.Handle("/team", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.CreateTeam))).Methods("POST")
@@ -216,7 +222,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	//progress tracking
 	mentor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
-	mentor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	mentor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
 	mentor.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	mentor.Handle("/progress", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetCohortProgressEntities))).Methods("GET")
 
@@ -259,7 +265,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/cohorts", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetCohorts))).Methods("GET")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
 	student.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
-	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetProgressEntities))).Methods("GET")
+	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
+	student.Handle("/item/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
 	student.Handle("/proposals", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateProposal))).Methods("POST")

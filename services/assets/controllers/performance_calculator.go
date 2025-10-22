@@ -7,7 +7,8 @@ import (
 	"web/services/assets/models"
 )
 
-// --- Recalculate a progress entity’s weighted performance and status ---
+
+// and updates its status automatically based on verified item progress.
 func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 	var items []models.ProgressItem
 	if err := c.DB.Where("entity_id = ?", entityID).Find(&items).Error; err != nil {
@@ -17,9 +18,9 @@ func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 		return nil
 	}
 
-	// --- Normalize verified item weights first ---
+	// --- Normalize verified weights before computing performance ---
 	if err := c.NormalizeEntityWeights(entityID); err != nil {
-		log.Println("Warning: failed to normalize weights:", err)
+		log.Printf("⚠️ Weight normalization failed for entity %d: %v\n", entityID, err)
 	}
 
 	var (
@@ -27,9 +28,9 @@ func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 		totalWeight      float64
 	)
 
-	// --- Compute weighted performance using only verified items ---
+	// --- Compute weighted performance (verified items only) ---
 	for _, item := range items {
-		if strings.ToLower(item.VerifiedStatus) != "verified" {
+		if !strings.EqualFold(item.VerifiedStatus, "Verified") {
 			continue
 		}
 
@@ -38,50 +39,66 @@ func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 			weight = 1
 		}
 
+		// Each item's performance is already a percentage (0–100)
 		totalPerformance += item.Performance * weight
 		totalWeight += weight
 	}
 
 	entityPerformance := 0.0
 	if totalWeight > 0 {
-		entityPerformance = math.Round((totalPerformance/totalWeight)*100) / 100
+		entityPerformance = totalPerformance / totalWeight
+		entityPerformance = math.Round(entityPerformance*100) / 100 // round to 2 decimals
 	}
 
-	// --- Update entity performance & derived status ---
-	return c.DB.Model(&models.ProgressEntity{}).
+	// --- Determine entity status based on performance ---
+	status := deriveEntityStatus(items)
+
+	// Auto-mark as "Completed" if performance >= 100%
+	if entityPerformance >= 100 {
+		entityPerformance = 100
+		status = models.StatusCompleted
+	}
+
+	// --- Update entity record ---
+	if err := c.DB.Model(&models.ProgressEntity{}).
 		Where("id = ?", entityID).
 		Updates(map[string]interface{}{
 			"performance": entityPerformance,
-			"status":      deriveEntityStatus(items),
-		}).Error
+			"status":      status,
+		}).Error; err != nil {
+		return err
+	}
+
+	log.Printf("✅ Entity %d performance updated: %.2f%% (%s)\n", entityID, entityPerformance, status)
+	return nil
 }
 
-// --- Derive entity status from verified item statuses ---
+// deriveEntityStatus determines the overall entity status based on verified item statuses.
 func deriveEntityStatus(items []models.ProgressItem) string {
-	var verifiedItems []models.ProgressItem
+	var verified []models.ProgressItem
 	for _, item := range items {
-		if item.VerifiedStatus == "Verified" {
-			verifiedItems = append(verifiedItems, item)
+		if strings.EqualFold(item.VerifiedStatus, "Verified") {
+			verified = append(verified, item)
 		}
 	}
 
-	if len(verifiedItems) == 0 {
+	if len(verified) == 0 {
 		return models.StatusPending
 	}
 
 	allCompleted := true
-	anyInProgress := false
-	anyCompleted := false
+	hasInProgress := false
+	hasCompleted := false
 
-	for _, item := range verifiedItems {
+	for _, item := range verified {
 		status := strings.ToLower(item.StudentStatus)
 		switch status {
 		case "completed":
-			anyCompleted = true
+			hasCompleted = true
 		case "in progress":
-			anyInProgress = true
+			hasInProgress = true
 			allCompleted = false
-		case "pending":
+		case "pending", "not started":
 			allCompleted = false
 		default:
 			allCompleted = false
@@ -91,18 +108,18 @@ func deriveEntityStatus(items []models.ProgressItem) string {
 	switch {
 	case allCompleted:
 		return models.StatusCompleted
-	case anyInProgress || anyCompleted:
-		return models.StatusInProgress // ✅ was "Pending" before
+	case hasInProgress || hasCompleted:
+		return models.StatusInProgress
 	default:
 		return models.StatusPending
 	}
 }
 
-// --- Normalize verified items so that total verified weight = 1 ---
+// NormalizeEntityWeights adjusts verified items so that their total verified weight = 1.
 func (c *Construct) NormalizeEntityWeights(entityID uint64) error {
 	var verifiedItems []models.ProgressItem
 	if err := c.DB.
-		Where("entity_id = ? AND verified_status = ?", entityID, "Verified").
+		Where("entity_id = ? AND LOWER(verified_status) = ?", entityID, "verified").
 		Find(&verifiedItems).Error; err != nil {
 		return err
 	}
@@ -125,9 +142,11 @@ func (c *Construct) NormalizeEntityWeights(entityID uint64) error {
 
 	for _, item := range verifiedItems {
 		newWeight := item.Weight / total
-		newWeight = math.Round(newWeight*100) / 100
-		if err := c.DB.Model(&item).Update("weight", newWeight).Error; err != nil {
-			log.Println("Weight normalization failed for item:", item.ID, "error:", err)
+		newWeight = math.Round(newWeight*100) / 100 // round to 2 decimals
+		if err := c.DB.Model(&models.ProgressItem{}).
+			Where("id = ?", item.ID).
+			Update("weight", newWeight).Error; err != nil {
+			log.Printf("⚠️ Failed to normalize weight for item %d: %v\n", item.ID, err)
 		}
 	}
 

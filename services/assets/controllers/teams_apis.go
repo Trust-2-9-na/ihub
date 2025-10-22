@@ -87,6 +87,15 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Start transaction ---
+	tx := c.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Unexpected error", map[string]interface{}{"panic": r})
+		}
+	}()
+
 	// --- Create team ---
 	team := models.Team{
 		Name:        input.Name,
@@ -94,14 +103,25 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		CohortRefID: &input.CohortRefID,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		CreatedByID: currentUser.UserID, // <-- assign creator supervisor
 	}
-	if err := c.DB.Create(&team).Error; err != nil {
+	if err := tx.Create(&team).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to create team", nil)
 		return
 	}
 
-	// --- Assign users to team ---
-	userTeams := make([]models.UserTeam, 0, len(allStudentIDs))
+	// --- Assign creator supervisor to the team ---
+	userTeams := []models.UserTeam{
+		{
+			UserRefID: currentUser.UserID,
+			TeamRefID: team.TeamID,
+			Role:      "Supervisor",
+			JoinedAt:  time.Now(),
+		},
+	}
+
+	// --- Assign students including leader ---
 	for _, uid := range allStudentIDs {
 		role := models.Member
 		if uid == input.LeaderID {
@@ -114,14 +134,18 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 			JoinedAt:  time.Now(),
 		})
 	}
-	if err := c.DB.Create(&userTeams).Error; err != nil {
+
+	if err := tx.Create(&userTeams).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to assign users to team", nil)
 		return
 	}
 
-	// --- Notify users ---
+	tx.Commit()
+
+	// --- Notify students ---
 	var cohort models.Cohort
-	_ = c.DB.First(&cohort, input.CohortRefID) // optional: get cohort name for notifications
+	_ = c.DB.First(&cohort, input.CohortRefID)
 
 	for _, uid := range allStudentIDs {
 		c.NotifyAndTrack(
@@ -136,18 +160,17 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// --- Respond ---
 	c.Json(w, http.StatusOK, "Team created successfully", map[string]interface{}{
 		"team_id":    team.TeamID,
 		"name":       team.Name,
 		"cohort_id":  team.CohortRefID,
 		"leader_id":  input.LeaderID,
 		"member_ids": input.MemberIDs,
+		"creator_id": currentUser.UserID, // Include creator in response
 	})
 }
 
 // ====================================== API for Updating a Team ================================================================
-
 func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	// --- Get logged-in user ---
 	currentUser, err := c.GetAuthenticatedUser(r)
@@ -166,8 +189,8 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		TeamID    uint64   `json:"team_id"`
 		Name      string   `json:"name"`
 		Desc      string   `json:"description"`
-		LeaderID  uint64   `json:"leader_id"`
-		MemberIDs []uint64 `json:"member_ids"`
+		LeaderID  uint64   `json:"leader_id"`  // student leader
+		MemberIDs []uint64 `json:"member_ids"` // student members
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid request", nil)
@@ -183,7 +206,8 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 
 	// --- Check for duplicate team name in the same cohort ---
 	var duplicate models.Team
-	if err := c.DB.Where("name = ? AND cohort_ref_id = ? AND team_id != ?", req.Name, team.CohortRefID, req.TeamID).First(&duplicate).Error; err == nil {
+	if err := c.DB.Where("name = ? AND cohort_ref_id = ? AND team_id != ?", req.Name, team.CohortRefID, req.TeamID).
+		First(&duplicate).Error; err == nil {
 		c.Json(w, http.StatusBadRequest, "Another team with this name already exists in the cohort", nil)
 		return
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -221,37 +245,7 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Update leader ---
-	var currentLeader models.UserTeam
-	c.DB.Where("team_ref_id = ? AND role = ?", team.TeamID, models.TeamLeader).First(&currentLeader)
-	if currentLeader.UserRefID != req.LeaderID {
-		// Demote old leader if exists
-		if currentLeader.UserRefID != 0 {
-			c.DB.Model(&currentLeader).Update("role", string(models.Member))
-			c.NotifyAndTrack(currentLeader.UserRefID, "Demoted from Team Leader",
-				fmt.Sprintf("You are no longer the leader of team '%s' but remain a member.", team.Name),
-				"TeamUpdate", "Team", &team.TeamID, "Updated", true)
-		}
-
-		// Promote or add new leader
-		var newLeader models.UserTeam
-		if err := c.DB.Where("team_ref_id = ? AND user_ref_id = ?", team.TeamID, req.LeaderID).First(&newLeader).Error; err == nil {
-			c.DB.Model(&newLeader).Update("role", string(models.TeamLeader))
-		} else {
-			newLeader = models.UserTeam{
-				UserRefID: req.LeaderID,
-				TeamRefID: team.TeamID,
-				Role:      string(models.TeamLeader),
-				JoinedAt:  time.Now(),
-			}
-			c.DB.Create(&newLeader)
-		}
-		c.NotifyAndTrack(req.LeaderID, "Team Leadership Assigned",
-			fmt.Sprintf("You are now the leader of team '%s'.", team.Name),
-			"TeamUpdate", "Team", &team.TeamID, "Updated", true)
-	}
-
-	// --- Update members ---
+	// --- Fetch current UserTeams ---
 	existingMembers := make(map[uint64]models.UserTeam)
 	var userTeams []models.UserTeam
 	c.DB.Where("team_ref_id = ?", team.TeamID).Find(&userTeams)
@@ -259,9 +253,30 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		existingMembers[ut.UserRefID] = ut
 	}
 
-	// Add new members
+	// --- Update leader ---
+	if leaderUT, exists := existingMembers[req.LeaderID]; exists {
+		c.DB.Model(&leaderUT).Update("role", string(models.TeamLeader))
+	} else {
+		c.DB.Create(&models.UserTeam{
+			UserRefID: req.LeaderID,
+			TeamRefID: team.TeamID,
+			Role:      string(models.TeamLeader),
+			JoinedAt:  time.Now(),
+		})
+	}
+	c.NotifyAndTrack(req.LeaderID, "Team Leadership Assigned",
+		fmt.Sprintf("You are now the leader of team '%s'.", team.Name),
+		"TeamUpdate", "Team", &team.TeamID, "Updated", true)
+
+	// --- Add new student members ---
+	// --- Add or update student members ---
 	for _, mid := range req.MemberIDs {
-		if _, exists := existingMembers[mid]; !exists {
+		if ut, exists := existingMembers[mid]; exists {
+			// Only update role if it's not the leader
+			if ut.Role != string(models.TeamLeader) {
+				c.DB.Model(&ut).Update("role", string(models.Member))
+			}
+		} else {
 			c.DB.Create(&models.UserTeam{
 				UserRefID: mid,
 				TeamRefID: team.TeamID,
@@ -275,9 +290,10 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		delete(existingMembers, mid)
 	}
 
-	// Remove old members not in request (except leader)
+	// --- Remove old members not in request (excluding leader and supervisors) ---
+	// Remove old members not in request (excluding leader)
 	for oldID, ut := range existingMembers {
-		if oldID == req.LeaderID {
+		if ut.Role == string(models.TeamLeader) {
 			continue
 		}
 		c.DB.Delete(&ut)
@@ -292,6 +308,7 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		"name":       team.Name,
 		"leader_id":  req.LeaderID,
 		"member_ids": req.MemberIDs,
+		"creator_id": team.CreatedByID,
 	})
 }
 
@@ -314,46 +331,130 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 
 	roleName := strings.ToLower(user.Role.Name)
 
-	// --- Base query with preloads ---
-	query := c.DB.Preload("UserTeams.UserRef.Profile").Preload("CohortDetails")
+	// --- Query params ---
+	teamID := r.URL.Query().Get("team_id")
+	teamName := strings.TrimSpace(r.URL.Query().Get("name"))
+	page, limit := c.GetPaginationParams(r)
+	offset := (page - 1) * limit
+
+	// --- Base query ---
+	query := c.DB.Model(&models.Team{}).
+		Preload("UserTeams.UserRef.Profile").
+		Preload("CohortDetails")
+
+	// --- Filtering by query params ---
+	if teamID != "" {
+		query = query.Where("team_id = ?", teamID)
+	}
+	if teamName != "" {
+		query = query.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(teamName)+"%")
+	}
 
 	// --- Role-based filtering ---
 	switch roleName {
 	case "student":
 		var teamIDs []uint64
-		c.DB.Model(&models.UserTeam{}).Where("user_user_id = ?", user.UserID).Pluck("team_team_id", &teamIDs)
+		c.DB.Model(&models.UserTeam{}).
+			Where("user_user_id = ?", user.UserID).
+			Pluck("team_team_id", &teamIDs)
+
 		if len(teamIDs) == 0 {
 			c.Json(w, http.StatusOK, "No teams found", map[string]interface{}{
 				"data":                 []interface{}{},
 				"total_members_all":    0,
 				"total_unique_members": 0,
+				"page":                 page,
+				"limit":                limit,
 			})
 			return
 		}
 		query = query.Where("team_id IN ?", teamIDs)
 
-	case "supervisor", "mentor":
-		cohortIDs := c.getAssignedCohorts(user.UserID, strings.Title(roleName))
-		if len(cohortIDs) == 0 {
+	case "supervisor":
+		var createdTeamIDs []uint64
+		c.DB.Model(&models.Team{}).Where("created_by_id = ?", user.UserID).Pluck("team_id", &createdTeamIDs)
+
+		cohortIDs := c.getAssignedCohorts(user.UserID, "Supervisor")
+		var cohortTeamIDs []uint64
+		if len(cohortIDs) > 0 {
+			c.DB.Model(&models.Team{}).Where("cohort_ref_id IN ?", cohortIDs).Pluck("team_id", &cohortTeamIDs)
+		}
+
+		teamIDMap := map[uint64]struct{}{}
+		for _, id := range createdTeamIDs {
+			teamIDMap[id] = struct{}{}
+		}
+		for _, id := range cohortTeamIDs {
+			teamIDMap[id] = struct{}{}
+		}
+
+		var teamIDs []uint64
+		for id := range teamIDMap {
+			teamIDs = append(teamIDs, id)
+		}
+
+		if len(teamIDs) == 0 {
 			c.Json(w, http.StatusOK, "No teams found", map[string]interface{}{
 				"data":                 []interface{}{},
 				"total_members_all":    0,
 				"total_unique_members": 0,
+				"page":                 page,
+				"limit":                limit,
 			})
 			return
 		}
-		query = query.Where("cohort_ref_id IN ?", cohortIDs)
+		query = query.Where("team_id IN ?", teamIDs)
+	case "mentor":
+		// Get students assigned to this mentor in the cohorts they are assigned to
+		var studentIDs []uint64
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("mentor_ref_id = ? AND cohort_ref_id IN ?", user.UserID, c.getAssignedCohorts(user.UserID, "Mentor")).
+			Pluck("student_ref_id", &studentIDs)
+
+		if len(studentIDs) == 0 {
+			c.Json(w, http.StatusOK, "No teams found", map[string]interface{}{
+				"data":                 []interface{}{},
+				"total_members_all":    0,
+				"total_unique_members": 0,
+				"page":                 page,
+				"limit":                limit,
+			})
+			return
+		}
+
+		// Get teams for these students
+		var teamIDs []uint64
+		c.DB.Model(&models.UserTeam{}).Where("user_user_id IN ?", studentIDs).Pluck("team_team_id", &teamIDs)
+		if len(teamIDs) == 0 {
+			c.Json(w, http.StatusOK, "No teams found", map[string]interface{}{
+				"data":                 []interface{}{},
+				"total_members_all":    0,
+				"total_unique_members": 0,
+				"page":                 page,
+				"limit":                limit,
+			})
+			return
+		}
+
+		query = query.Where("team_id IN ?", teamIDs)
 
 	case "opsadmin":
-		// No filtering
+		// Full access
 	default:
 		c.Json(w, http.StatusForbidden, "You are not allowed to view teams", nil)
 		return
 	}
 
-	// --- Fetch teams ---
+	// --- Count total ---
+	var totalCount int64
+	if err := query.Count(&totalCount).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to count teams", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// --- Fetch teams with pagination ---
 	var teams []models.Team
-	if err := query.Find(&teams).Error; err != nil {
+	if err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&teams).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch teams", map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -412,22 +513,13 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:   t.CreatedAt.Format("2006-01-02 15:04"),
 			UpdatedAt:   t.UpdatedAt.Format("2006-01-02 15:04"),
 		})
-
-		// --- Notify and Track ---
-		c.NotifyAndTrack(
-			user.UserID,
-			"Viewed Team",
-			fmt.Sprintf("%s viewed team %s", user.Profile.FirstName, t.Name),
-			"TeamView",
-			"Team",
-			&t.TeamID,
-			"Viewed",
-			false,
-		)
 	}
 
 	c.Json(w, http.StatusOK, "Success", map[string]interface{}{
 		"data":                 resp,
+		"page":                 page,
+		"limit":                limit,
+		"total":                totalCount,
 		"total_members_all":    totalMembersAllTeams,
 		"total_unique_members": len(uniqueMembers),
 	})
@@ -436,7 +528,7 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 //========================================== Team Management ===============================================
 
 func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
-	// --- Get logged-in user ---
+	// --- Auth check ---
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -455,7 +547,7 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Parse request payload ---
+	// --- Parse payload ---
 	type manageTeamReq struct {
 		TeamIDs   []uint64 `json:"team_ids"`
 		Action    string   `json:"action"`     // archive, unarchive, delete, remove_members
@@ -472,7 +564,7 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Fetch teams with userteams preloaded ---
+	// --- Load target teams ---
 	var teams []models.Team
 	if err := c.DB.Preload("UserTeams.UserRef.Profile").
 		Where("team_id IN ?", req.TeamIDs).Find(&teams).Error; err != nil || len(teams) == 0 {
@@ -480,19 +572,30 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Filter teams based on supervisor's assigned cohorts ---
+	// --- Determine which teams the supervisor can manage ---
 	assignedCohorts := c.getAssignedCohorts(user.UserID, "Supervisor")
 	validTeams := make([]models.Team, 0)
+
 	for _, t := range teams {
-		if t.CohortRefID != nil && slices.Contains(assignedCohorts, *t.CohortRefID) {
+		// Check if user is assigned to team as supervisor
+		var isTeamSupervisor bool
+		c.DB.Model(&models.UserTeam{}).
+			Where("team_ref_id = ? AND user_ref_id = ? AND role = ?", t.TeamID, user.UserID, "Supervisor").
+			Select("count(*) > 0").Find(&isTeamSupervisor)
+
+		if t.CreatedByID == user.UserID ||
+			isTeamSupervisor ||
+			(t.CohortRefID != nil && slices.Contains(assignedCohorts, *t.CohortRefID)) {
 			validTeams = append(validTeams, t)
 		}
 	}
+
 	if len(validTeams) == 0 {
 		c.Json(w, http.StatusForbidden, "You are not allowed to manage these teams", nil)
 		return
 	}
 
+	// --- Prepare response container ---
 	type teamActionResult struct {
 		TeamID      uint64   `json:"team_id"`
 		Name        string   `json:"name"`
@@ -502,7 +605,6 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 	}
 	var results []teamActionResult
 
-	// --- Begin transaction ---
 	tx := c.DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {
@@ -513,7 +615,9 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 
 	for _, t := range validTeams {
 		var affected []uint64
-		switch strings.ToLower(req.Action) {
+		action := strings.ToLower(req.Action)
+
+		switch action {
 		case "archive":
 			if t.IsArchived {
 				results = append(results, teamActionResult{TeamID: t.TeamID, Name: t.Name, Action: "archive", Message: "Already archived"})
@@ -553,6 +657,22 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 			results = append(results, teamActionResult{TeamID: t.TeamID, Name: t.Name, Action: "unarchive", AffectedIDs: affected, Message: "Team unarchived successfully"})
 
 		case "delete":
+			// Check delete permissions (creator or assigned supervisor)
+			var isTeamSupervisor bool
+			c.DB.Model(&models.UserTeam{}).
+				Where("team_ref_id = ? AND user_ref_id = ? AND role = ?", t.TeamID, user.UserID, "Supervisor").
+				Select("count(*) > 0").Find(&isTeamSupervisor)
+
+			if t.CreatedByID != user.UserID && !isTeamSupervisor {
+				results = append(results, teamActionResult{
+					TeamID:  t.TeamID,
+					Name:    t.Name,
+					Action:  "delete",
+					Message: "You are not authorized to delete this team",
+				})
+				continue
+			}
+
 			for _, ut := range t.UserTeams {
 				affected = append(affected, ut.UserRefID)
 				c.NotifyAndTrack(ut.UserRefID, "Team Deleted",
@@ -576,7 +696,7 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 				var ut models.UserTeam
 				if err := tx.Where("user_ref_id = ? AND team_ref_id = ?", mID, t.TeamID).First(&ut).Error; err == nil {
 					if ut.Role == "TeamLeader" {
-						continue // skip leader
+						continue // can't remove leader
 					}
 					if err := tx.Delete(&ut).Error; err == nil {
 						removed = append(removed, mID)
@@ -586,7 +706,13 @@ func (c *Construct) ManageTeamSafe(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			results = append(results, teamActionResult{TeamID: t.TeamID, Name: t.Name, Action: "remove_members", AffectedIDs: removed, Message: fmt.Sprintf("%d member(s) removed", len(removed))})
+			results = append(results, teamActionResult{
+				TeamID:      t.TeamID,
+				Name:        t.Name,
+				Action:      "remove_members",
+				AffectedIDs: removed,
+				Message:     fmt.Sprintf("%d member(s) removed", len(removed)),
+			})
 
 		default:
 			tx.Rollback()

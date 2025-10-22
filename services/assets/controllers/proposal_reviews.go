@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"errors"
 
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
@@ -22,12 +23,35 @@ type CohortUser struct {
 
 // Assign student to cohort after proposal is approved
 func AssignStudentToCohort(db *gorm.DB, studentID, cohortID uint64) error {
-	cu := models.CohortUser{
-		UserCohortID: cohortID,
-		MemberID:     studentID,
-	}
-	return db.Create(&cu).Error
+    var existing models.CohortUser
+    err := db.Where("cohort_cohort_id = ? AND user_user_id = ?", cohortID, studentID).First(&existing).Error
+
+    if err == nil {
+        // Student already assigned to this cohort
+        if existing.Role == "Student" {
+            return fmt.Errorf("student (ID %d) is already assigned to cohort (ID %d)", studentID, cohortID)
+        }
+
+        // Assigned but role is different — update to Student
+        existing.Role = "Student"
+        return db.Save(&existing).Error
+    }
+
+    if errors.Is(err, gorm.ErrRecordNotFound) {
+        // Record doesn't exist — create new
+        cu := models.CohortUser{
+            UserCohortID: cohortID,
+            MemberID:     studentID,
+            Role:         "Student",
+            CreatedAt:    time.Now(),
+        }
+        return db.Create(&cu).Error
+    }
+
+    // Unexpected error
+    return fmt.Errorf("failed to assign student to cohort: %w", err)
 }
+
 
 func (c *Construct) AddReview(w http.ResponseWriter, r *http.Request) {
 	// --- Parse proposal_id from query ---

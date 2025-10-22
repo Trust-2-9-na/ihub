@@ -88,7 +88,6 @@ func Migrate() error {
 		return err
 	}
 	// Cohort users (many-to-many)
-	// 1️⃣ AutoMigrate CohortUser
 	if err := db.AutoMigrate(&models.CohortUser{}); err != nil {
 		log.Fatalf("Migration failed for CohortUsers: %v", err)
 	}
@@ -109,6 +108,14 @@ func Migrate() error {
 		log.Fatalf("Failed to add 'created_by' column to cohort_users: %v", err)
 	}
 
+	// Add 'created_at' column if it doesn't exist
+	if err := db.Exec(`
+    ALTER TABLE cohort_users 
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()
+`).Error; err != nil {
+		log.Fatalf("Failed to add 'created_at' column to cohort_users: %v", err)
+	}
+
 	// Add 'deleted_at' column if it doesn't exist
 	if err := db.Exec(`
     ALTER TABLE cohort_users 
@@ -119,9 +126,9 @@ func Migrate() error {
 
 	// 2️⃣ Create unique index to prevent duplicate active assignments
 	if err := db.Exec(`
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_user_per_cohort
-	ON cohort_users(cohort_cohort_id, user_user_id)
-	WHERE deleted_at IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_user_per_cohort
+    ON cohort_users(cohort_cohort_id, user_user_id)
+    WHERE deleted_at IS NULL;
 `).Error; err != nil {
 		log.Fatalf("Failed to create unique index for cohort assignments: %v", err)
 	}
@@ -222,8 +229,14 @@ func Migrate() error {
 		return err
 	}
 	log.Println("password request table created successfully")
+	// 21 migrate student mentors
+	if err := db.AutoMigrate(&models.MentorStudentAssignment{}); err != nil {
+		log.Printf("Migration failed for mentor students: %v", err)
+		return err
+	}
+	log.Println("mentor student table created successfully")
 
-	// 21	 migrate password Reset
+	// 22	 migrate password Reset
 
 	if err := db.AutoMigrate(&models.PasswordResetToken{}); err != nil {
 		log.Printf("Migration failed for password reset: %v", err)

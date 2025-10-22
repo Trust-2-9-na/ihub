@@ -17,10 +17,10 @@ import (
 //                           Assigning Mentors to a Cohort
 //============================"""""""""======================="""""""""======================
 
-func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) AssignMentorsToCohort(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortID uint64 `json:"cohort_id"`
-		MentorID uint64 `json:"mentor_id"`
+		CohortID  uint64   `json:"cohort_id"`
+		MentorIDs []uint64 `json:"mentor_ids"` // multiple mentors
 	}
 
 	// Decode request
@@ -28,8 +28,8 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	if body.CohortID == 0 || body.MentorID == 0 {
-		c.Json(w, http.StatusBadRequest, "cohort_id and mentor_id are required", nil)
+	if body.CohortID == 0 || len(body.MentorIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "cohort_id and mentor_ids are required", nil)
 		return
 	}
 
@@ -51,44 +51,48 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if mentor already assigned
-	var existing models.CohortUser
-	err = c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, body.MentorID, "Mentor").
-		First(&existing).Error
-	if err == nil {
-		c.Json(w, http.StatusConflict, "Mentor already assigned to this cohort", map[string]interface{}{
-			"cohort_id": body.CohortID,
-			"mentor_id": body.MentorID,
-			"message":   "Use reassign/unassign API to change mentor assignment",
-		})
-		return
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.Json(w, http.StatusInternalServerError, "Failed to check mentor", map[string]interface{}{"error": err.Error()})
-		return
+	assigned := []string{}
+	conflicts := []string{}
+
+	for _, mid := range body.MentorIDs {
+		// Check if mentor already assigned
+		var existing models.CohortUser
+		err := c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, mid, "Mentor").
+			First(&existing).Error
+		if err == nil {
+			conflicts = append(conflicts, fmt.Sprintf("%d", mid))
+			continue
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.Json(w, http.StatusInternalServerError, "Failed to check mentor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Assign mentor
+		assign := models.CohortUser{
+			UserCohortID: body.CohortID,
+			MemberID:     mid,
+			Role:         "Mentor",
+			CreatedBy:    &currentUser.UserID,
+		}
+		if err := c.DB.Create(&assign).Error; err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to assign mentor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Notify
+		c.NotifyAndTrack(mid, "Mentor Assignment",
+			fmt.Sprintf("You have been assigned to cohort '%s'", cohort.Name),
+			"Assignment", "Cohort", &body.CohortID, "",
+			true,
+		)
+
+		assigned = append(assigned, fmt.Sprintf("%d", mid))
 	}
 
-	// Assign mentor
-	assign := models.CohortUser{
-		UserCohortID: body.CohortID,
-		MemberID:     body.MentorID,
-		Role:         "Mentor",
-		CreatedBy:    &currentUser.UserID,
-	}
-	if err := c.DB.Create(&assign).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to assign mentor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Notify & Audit
-	c.NotifyAndTrack(body.MentorID, "Mentor Assignment",
-		fmt.Sprintf("You have been assigned to cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortID, "",
-		true,
-	)
-
-	c.Json(w, http.StatusOK, "Mentor assigned successfully", map[string]interface{}{
+	c.Json(w, http.StatusOK, "Mentors assignment processed", map[string]interface{}{
 		"cohort_id": body.CohortID,
-		"mentor_id": body.MentorID,
+		"assigned":  assigned,
+		"conflicts": conflicts,
 	})
 }
 
@@ -96,16 +100,21 @@ func (c *Construct) AssignMentorToCohort(w http.ResponseWriter, r *http.Request)
 //                        Reassigning mentors to a Cohort
 //============================"""""""""======================="""""""""======================
 
-func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) ReassignMentors(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortID    uint64 `json:"cohort_id"`
-		OldMentorID uint64 `json:"old_mentor_id"`
-		NewMentorID uint64 `json:"new_mentor_id"`
+		CohortID     uint64   `json:"cohort_id"`
+		OldMentorIDs []uint64 `json:"old_mentor_ids"` // mentors to remove
+		NewMentorIDs []uint64 `json:"new_mentor_ids"` // mentors to assign
 	}
 
 	// Decode JSON
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if body.CohortID == 0 || len(body.OldMentorIDs) == 0 || len(body.NewMentorIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "cohort_id, old_mentor_ids, and new_mentor_ids are required", nil)
 		return
 	}
 
@@ -131,112 +140,169 @@ func (c *Construct) ReassignMentor(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// 🔹 1️⃣ Soft delete existing mentor assignment
-	var oldAssignment models.CohortUser
-	if err := tx.Where(
-		"cohort_cohort_id = ? AND user_user_id = ? AND role = ?",
-		body.CohortID, body.OldMentorID, "Mentor",
-	).First(&oldAssignment).Error; err != nil {
-		tx.Rollback()
+	removed := []uint64{}
+	added := []uint64{}
+	conflicts := []uint64{}
+
+	// 1️⃣ Remove old mentors
+	for _, oldID := range body.OldMentorIDs {
+		var oldAssignment models.CohortUser
+		err := tx.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, oldID, "Mentor").
+			First(&oldAssignment).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.Json(w, http.StatusNotFound, "Old mentor not found in this cohort", nil)
-		} else {
-			c.Json(w, http.StatusInternalServerError, "Failed to fetch old mentor assignment", map[string]interface{}{"error": err.Error()})
+			continue // skip if not found
+		} else if err != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to fetch old mentor", map[string]interface{}{"error": err.Error()})
+			return
 		}
-		return
+
+		if err := tx.Delete(&oldAssignment).Error; err != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to remove old mentor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+		removed = append(removed, oldID)
+
+		// Notify old mentor
+		c.NotifyAndTrack(oldID, "Mentor Reassignment",
+			fmt.Sprintf("You have been removed from cohort %d by %s", body.CohortID, currentUser.Username),
+			"Reassignment", "Cohort", &body.CohortID, "Completed",
+			true,
+		)
 	}
 
-	if err := tx.Delete(&oldAssignment).Error; err != nil {
-		tx.Rollback()
-		c.Json(w, http.StatusInternalServerError, "Failed to soft delete old mentor", map[string]interface{}{"error": err.Error()})
-		return
+	// 2️⃣ Assign new mentors
+	for _, newID := range body.NewMentorIDs {
+		var existing models.CohortUser
+		err := tx.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, newID, "Mentor").
+			First(&existing).Error
+		if err == nil {
+			conflicts = append(conflicts, newID) // already assigned
+			continue
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to check new mentor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		assign := models.CohortUser{
+			UserCohortID: body.CohortID,
+			MemberID:     newID,
+			Role:         "Mentor",
+			CreatedBy:    &currentUser.UserID,
+		}
+		if err := tx.Create(&assign).Error; err != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to assign new mentor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+		added = append(added, newID)
+
+		// Notify new mentor
+		c.NotifyAndTrack(newID, "Mentor Reassignment",
+			fmt.Sprintf("You have been assigned to cohort %d by %s", body.CohortID, currentUser.Username),
+			"Reassignment", "Cohort", &body.CohortID, "Completed",
+			true,
+		)
 	}
 
-	// 🔹 2️⃣ Assign new mentor
-	assign := models.CohortUser{
-		UserCohortID: body.CohortID,
-		MemberID:     body.NewMentorID,
-		Role:         "Mentor",
-		CreatedBy:    &currentUser.UserID,
-	}
-
-	if err := tx.Create(&assign).Error; err != nil {
-		tx.Rollback()
-		c.Json(w, http.StatusInternalServerError, "Failed to assign new mentor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// 🔹 3️⃣ Commit transaction
+	// 3️⃣ Commit transaction
 	if err := tx.Commit().Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Transaction commit failed", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 🔹 4️⃣ Notifications and audit tracking
-	c.NotifyAndTrack(
-		body.OldMentorID,
-		"Mentor Reassignment",
-		fmt.Sprintf("You have been removed from cohort %d by %s", body.CohortID, currentUser.Username),
-		"Reassignment", "Cohort", &body.CohortID, "Completed",
-		true,
-	)
-
-	c.NotifyAndTrack(
-		body.NewMentorID,
-		"Mentor Reassignment",
-		fmt.Sprintf("You have been assigned to cohort %d by %s", body.CohortID, currentUser.Username),
-		"Reassignment", "Cohort", &body.CohortID, "Completed",
-		true,
-	)
-
-	// 🔹 5️⃣ Final response
-	c.Json(w, http.StatusOK, "Mentor reassigned successfully", map[string]interface{}{
-		"cohort_id":     body.CohortID,
-		"old_mentor_id": body.OldMentorID,
-		"new_mentor_id": body.NewMentorID,
-		"assigned_by":   currentUser.Username,
+	// 4️⃣ Response
+	c.Json(w, http.StatusOK, "Mentor reassignment processed", map[string]interface{}{
+		"cohort_id":   body.CohortID,
+		"removed":     removed,
+		"added":       added,
+		"conflicts":   conflicts,
+		"assigned_by": currentUser.Username,
 	})
 }
 
-//============================"""""""""======================="""""""""======================
-//                        Unassigning Mentors to a Cohort
-//============================"""""""""======================="""""""""======================
-
-func (c *Construct) UnassignMentor(w http.ResponseWriter, r *http.Request) {
+// ============================"""""""""======================="""""""""======================
+//
+//	Unassigning Mentors to a Cohort
+//
+// ============================"""""""""======================="""""""""======================
+func (c *Construct) UnassignMentors(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortID uint64 `json:"cohort_id"`
-		MentorID uint64 `json:"mentor_id"`
+		CohortID  uint64   `json:"cohort_id"`
+		MentorIDs []uint64 `json:"mentor_ids"` // support multiple mentors
 	}
 
+	// Decode JSON
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
+	if body.CohortID == 0 || len(body.MentorIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "cohort_id and mentor_ids are required", nil)
+		return
+	}
 
-	_, err := c.GetAuthenticatedUser(r)
+	// Authenticate user
+	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, err.Error(), nil)
 		return
 	}
 
-	tx := c.DB.Begin()
-	if err := tx.Unscoped().Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, body.MentorID, "Mentor").
-		Delete(&models.CohortUser{}).Error; err != nil {
-		tx.Rollback()
-		c.Json(w, http.StatusInternalServerError, "Failed to unassign mentor", map[string]interface{}{"error": err.Error()})
+	if strings.ToLower(currentUser.Role.Name) != "supervisor" {
+		c.Json(w, http.StatusForbidden, "Only supervisors can unassign mentors", nil)
 		return
 	}
-	tx.Commit()
 
-	c.NotifyAndTrack(body.MentorID, "Mentor Unassigned",
-		fmt.Sprintf("You have been unassigned from cohort '%d'", body.CohortID),
-		"Unassignment", "Cohort", &body.CohortID, "",
-		true,
-	)
+	// Start transaction
+	tx := c.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Unexpected system error", map[string]interface{}{"panic": r})
+		}
+	}()
 
-	c.Json(w, http.StatusOK, "Mentor unassigned successfully", map[string]interface{}{
-		"cohort_id": body.CohortID,
-		"mentor_id": body.MentorID,
+	unassigned := []uint64{}
+	notFound := []uint64{}
+
+	// Loop through mentors to unassign
+	for _, mentorID := range body.MentorIDs {
+		result := tx.Unscoped().Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortID, mentorID, "Mentor").
+			Delete(&models.CohortUser{})
+		if result.Error != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to unassign mentor", map[string]interface{}{"error": result.Error.Error()})
+			return
+		}
+
+		if result.RowsAffected > 0 {
+			unassigned = append(unassigned, mentorID)
+			// Notify each mentor
+			c.NotifyAndTrack(mentorID, "Mentor Unassigned",
+				fmt.Sprintf("You have been unassigned from cohort '%d' by %s", body.CohortID, currentUser.Username),
+				"Unassignment", "Cohort", &body.CohortID, "",
+				true,
+			)
+		} else {
+			notFound = append(notFound, mentorID)
+		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Transaction commit failed", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Final response
+	c.Json(w, http.StatusOK, "Mentor unassignment processed", map[string]interface{}{
+		"cohort_id":    body.CohortID,
+		"unassigned":   unassigned,
+		"not_found":    notFound,
+		"processed_by": currentUser.Username,
 	})
 }
 

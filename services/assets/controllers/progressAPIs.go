@@ -16,20 +16,15 @@ import (
 
 // calculating performance
 func calculateItemPerformance(studentStatus, verifiedStatus string) float64 {
-	verifiedStatus = strings.ToLower(verifiedStatus)
-	studentStatus = strings.ToLower(studentStatus)
-
-	if verifiedStatus != "verified" {
-		return 0
-	}
-
-	switch studentStatus {
-	case "completed":
-		return 1
-	case "in progress":
-		return 0.5
+	switch {
+	case strings.EqualFold(verifiedStatus, "Verified"):
+		return 1.0
+	case strings.EqualFold(studentStatus, "Completed"):
+		return 0.75
+	case strings.EqualFold(studentStatus, "In Progress"):
+		return 0.4
 	default:
-		return 0
+		return 0.0
 	}
 }
 
@@ -170,7 +165,7 @@ func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Req
 
 	// --- Base query ---
 	query := c.DB.Model(&models.ProgressEntity{}).
-		Preload("Cohort").
+		Preload("EntityCohort").
 		Order("updated_at DESC")
 
 	// --- Role-based filtering ---
@@ -257,7 +252,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		Weight       *float64   `json:"weight,omitempty"`
 		DueDate      *time.Time `json:"due_date,omitempty"`
 		AssignedToID *uint64    `json:"assigned_to_id,omitempty"`
-		TeamRefID    uint64     `json:"team_ref_id"`
+		TeamRefID    *uint64    `json:"team_ref_id,omitempty"`
 	}
 
 	// --- Parse input ---
@@ -265,8 +260,8 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	if body.EntityID == 0 || body.PhaseName == "" || body.Status == "" || body.TeamRefID == 0 {
-		c.Json(w, http.StatusBadRequest, "entity_id, phase_name, status, and team_ref_id are required", nil)
+	if body.EntityID == 0 || body.PhaseName == "" || body.Status == "" {
+		c.Json(w, http.StatusBadRequest, "entity_id, phase_name, and status are required", nil)
 		return
 	}
 
@@ -277,24 +272,27 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Verify user is team leader ---
-	var userTeam models.UserTeam
-	if err := c.DB.Where("team_team_id = ? AND user_user_id = ?", body.TeamRefID, currentUser.UserID).
-		First(&userTeam).Error; err != nil {
-		c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
-		return
-	}
-	if userTeam.Role != string(models.TeamLeader) {
-		c.Json(w, http.StatusForbidden, "Only the team leader can add progress items", nil)
-		return
-	}
+	// --- Verify team logic (optional) ---
+	var team *models.Team
+	if body.TeamRefID != nil {
+		var userTeam models.UserTeam
+		if err := c.DB.Where("team_team_id = ? AND user_user_id = ?", *body.TeamRefID, currentUser.UserID).
+			First(&userTeam).Error; err != nil {
+			c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
+			return
+		}
 
-	// --- Load team and its users ---
-	var team models.Team
-	if err := c.DB.Preload("UserTeams.UserRef.Profile").
-		Where("team_id = ?", body.TeamRefID).First(&team).Error; err != nil {
-		c.Json(w, http.StatusNotFound, "Team not found", nil)
-		return
+		if userTeam.Role != string(models.TeamLeader) {
+			c.Json(w, http.StatusForbidden, "Only the team leader can add progress items", nil)
+			return
+		}
+
+		team = &models.Team{}
+		if err := c.DB.Preload("UserTeams.UserRef.Profile").
+			Where("team_id = ?", *body.TeamRefID).First(team).Error; err != nil {
+			c.Json(w, http.StatusNotFound, "Team not found", nil)
+			return
+		}
 	}
 
 	// --- Fetch parent entity ---
@@ -307,40 +305,35 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 	// --- Determine statuses ---
 	studentStatus := body.Status
 	verifiedStatus := "Pending Verification"
+
 	if strings.ToLower(currentUser.Role.Name) != "student" {
 		studentStatus = "Completed"
 		verifiedStatus = "Verified"
 	}
 
-	// --- Calculate weight ---
+	// --- Calculate weight dynamically if not provided ---
 	weight := 0.0
 	if body.Weight != nil {
 		weight = *body.Weight
 	} else {
 		var totalWeight float64
-		var count int64
 		c.DB.Model(&models.ProgressItem{}).
 			Where("entity_id = ?", body.EntityID).
-			Select("COALESCE(SUM(weight),0)").Scan(&totalWeight).
-			Count(&count)
+			Select("COALESCE(SUM(weight),0)").Scan(&totalWeight)
+
 		if totalWeight < 1 {
 			weight = math.Max(0, 1-totalWeight)
 		} else {
-			weight = 1 / float64(count+1)
-			var items []models.ProgressItem
-			if err := c.DB.Where("entity_id = ?", body.EntityID).Find(&items).Error; err == nil {
-				for _, it := range items {
-					it.Weight = 1 / float64(count+1)
-					c.DB.Save(&it)
-				}
-			}
+			weight = 1 / (totalWeight + 1)
 		}
 	}
 
+	// --- Calculate performance per item ---
+	performance := calculateItemPerformance(studentStatus, verifiedStatus)
+
 	// --- Create progress item ---
 	item := models.ProgressItem{
-		CohortRefID:    team.CohortRefID,
-		TeamRefID:      &body.TeamRefID,
+		CohortRefID:    entity.EntityCohortID,
 		EntityID:       &body.EntityID,
 		ParentID:       body.ParentID,
 		PhaseName:      body.PhaseName,
@@ -348,10 +341,14 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		StudentStatus:  studentStatus,
 		VerifiedStatus: verifiedStatus,
 		Weight:         weight,
-		Performance:    calculateItemPerformance(studentStatus, verifiedStatus),
+		Performance:    performance,
 		DueDate:        body.DueDate,
 		AssignedToID:   body.AssignedToID,
 		CreatedByID:    currentUser.UserID,
+	}
+
+	if body.TeamRefID != nil {
+		item.TeamRefID = body.TeamRefID
 	}
 
 	if err := c.DB.Create(&item).Error; err != nil {
@@ -359,15 +356,29 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Notify all team members ---
-	for _, ut := range team.UserTeams {
-		member := ut.UserRef
+	// --- Notify relevant users ---
+	if team != nil {
+		for _, ut := range team.UserTeams {
+			member := ut.UserRef
+			c.NotifyAndTrack(
+				member.UserID,
+				"New Team Progress Item",
+				fmt.Sprintf("A new progress item '%s' has been added to team '%s' by %s.",
+					item.PhaseName, team.Name, currentUser.Profile.FirstName),
+				"TeamProgress",
+				"ProgressItem",
+				&item.ID,
+				item.StudentStatus,
+				false,
+			)
+		}
+	} else {
+		// Individual notification
 		c.NotifyAndTrack(
-			member.UserID,
-			"New Team Progress Item",
-			fmt.Sprintf("A new progress item '%s' has been added to team '%s' by leader %s.",
-				item.PhaseName, team.Name, currentUser.Profile.FirstName),
-			"TeamProgress",
+			currentUser.UserID,
+			"Progress Item Created",
+			fmt.Sprintf("Progress item '%s' has been added to your progress list.", item.PhaseName),
+			"StudentProgress",
 			"ProgressItem",
 			&item.ID,
 			item.StudentStatus,
@@ -375,35 +386,28 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// --- Recalculate entity performance if verified ---
-	if verifiedStatus == "Verified" {
-		if err := c.RecalculateEntityPerformance(body.EntityID); err != nil {
-			log.Println("Warning: entity performance recalculation failed:", err)
-		}
+	// --- Always recalculate entity performance ---
+	if err := c.RecalculateEntityPerformance(body.EntityID); err != nil {
+		log.Println("Warning: entity performance recalculation failed:", err)
 	}
 
 	// --- Build response ---
-	memberCount := len(team.UserTeams)
 	response := map[string]interface{}{
 		"id":              item.ID,
 		"phase_name":      item.PhaseName,
 		"status":          item.StudentStatus,
-		"verified_status": verifiedStatus,
+		"verified_status": item.VerifiedStatus,
 		"weight":          item.Weight,
 		"performance":     item.Performance,
 		"entity_id":       entity.ID,
 		"entity_name":     entity.EntityName,
 		"entity_type":     entity.EntityType,
-		"team": map[string]interface{}{
-			"team_id":      team.TeamID,
-			"team_name":    team.Name,
-			"leader_name":  currentUser.Profile.FirstName + " " + currentUser.Profile.LastName,
-			"member_count": memberCount,
-		},
 	}
 
 	c.Json(w, http.StatusCreated, "Progress item created successfully", map[string]interface{}{"data": response})
 }
+
+
 
 // =======++++=======================================================”””””=============
 //

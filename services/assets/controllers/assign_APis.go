@@ -18,18 +18,18 @@ import (
 //	Supervisor Cohort Assignments
 //
 // ===============++++===================++============================================
-func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) AssignSupervisorsToCohort(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortCohortID uint64 `json:"cohort_cohort_id"`
-		UserUserID     uint64 `json:"user_user_id"`
+		CohortCohortID uint64   `json:"cohort_cohort_id"`
+		UserUserIDs    []uint64 `json:"user_user_ids"` // multiple supervisors
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	if body.CohortCohortID == 0 || body.UserUserID == 0 {
-		c.Json(w, http.StatusBadRequest, "cohort_cohort_id and user_user_id are required", nil)
+	if body.CohortCohortID == 0 || len(body.UserUserIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "cohort_cohort_id and user_user_ids are required", nil)
 		return
 	}
 
@@ -49,46 +49,53 @@ func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Check if supervisor already exists (soft-deleted included)
-	var existing models.CohortUser
-	err = c.DB.Unscoped().Where("cohort_cohort_id = ? AND role = ? AND user_user_id = ?", body.CohortCohortID, "Supervisor", body.UserUserID).First(&existing).Error
-	if err == nil {
-		c.Json(w, http.StatusConflict, "Supervisor already assigned to this cohort", nil)
-		return
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.Json(w, http.StatusInternalServerError, "Failed to check supervisor", map[string]interface{}{"error": err.Error()})
-		return
+	assignedSupervisors := []string{}
+	conflicts := []string{}
+
+	for _, userID := range body.UserUserIDs {
+		// Skip if already assigned
+		var existing models.CohortUser
+		err = c.DB.Unscoped().Where("cohort_cohort_id = ? AND role = ? AND user_user_id = ?", body.CohortCohortID, "Supervisor", userID).First(&existing).Error
+		if err == nil {
+			conflicts = append(conflicts, fmt.Sprintf("%d", userID))
+			continue
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.Json(w, http.StatusInternalServerError, "Failed to check supervisor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Fetch supervisor details
+		var supervisor models.User
+		if err := c.DB.Preload("Profile").First(&supervisor, "user_id = ?", userID).Error; err != nil {
+			conflicts = append(conflicts, fmt.Sprintf("%d", userID))
+			continue
+		}
+		fullName := strings.TrimSpace(supervisor.Profile.FirstName + " " + supervisor.Profile.LastName)
+
+		// Assign supervisor
+		assign := models.CohortUser{
+			UserCohortID: body.CohortCohortID,
+			MemberID:     userID,
+			Role:         "Supervisor",
+		}
+		if err := c.DB.Create(&assign).Error; err != nil {
+			conflicts = append(conflicts, fullName)
+			continue
+		}
+
+		// Notify
+		c.NotifyAndTrack(supervisor.UserID, "Cohort Assignment",
+			fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
+			"Assignment", "Cohort", &body.CohortCohortID, "", true,
+		)
+
+		assignedSupervisors = append(assignedSupervisors, fullName)
 	}
 
-	// Fetch new supervisor details
-	var newSupervisor models.User
-	if err := c.DB.Preload("Profile").First(&newSupervisor, "user_id = ?", body.UserUserID).Error; err != nil {
-		c.Json(w, http.StatusNotFound, "Supervisor not found", nil)
-		return
-	}
-	newSupervisorFullName := strings.TrimSpace(newSupervisor.Profile.FirstName + " " + newSupervisor.Profile.LastName)
-
-	// Assign supervisor (soft-delete is not needed here, just create)
-	assign := models.CohortUser{
-		UserCohortID: body.CohortCohortID,
-		MemberID:     body.UserUserID,
-		Role:         "Supervisor",
-	}
-	if err := c.DB.Create(&assign).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to assign supervisor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// Notify & audit via NotifyAndTrack
-	c.NotifyAndTrack(newSupervisor.UserID, "Cohort Assignment",
-		fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortCohortID, "",
-		true,
-	)
-
-	c.Json(w, http.StatusOK, "Supervisor assigned successfully", map[string]interface{}{
-		"cohort_name": cohort.Name,
-		"supervisor":  newSupervisorFullName,
+	c.Json(w, http.StatusOK, "Supervisors assignment completed", map[string]interface{}{
+		"cohort_name":          cohort.Name,
+		"assigned_supervisors": assignedSupervisors,
+		"skipped_or_conflicts": conflicts,
 	})
 }
 
@@ -96,24 +103,25 @@ func (c *Construct) AssignSupervisorToCohort(w http.ResponseWriter, r *http.Requ
 //                          Supervisor Cohort Reassignments
 // ===============++++===================++============================================
 
-func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) ReassignSupervisorsToCohort(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortCohortID uint64 `json:"cohort_cohort_id"`
-		OldUserID      uint64 `json:"old_user_id"`
-		NewUserID      uint64 `json:"new_user_id"`
+		CohortCohortID uint64   `json:"cohort_cohort_id"`
+		OldUserIDs     []uint64 `json:"old_user_ids"`
+		NewUserIDs     []uint64 `json:"new_user_ids"`
 	}
 
-	// --- Decode request ---
+	// Decode request
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	if body.CohortCohortID == 0 || body.OldUserID == 0 || body.NewUserID == 0 {
-		c.Json(w, http.StatusBadRequest, "cohort_cohort_id, old_user_id, and new_user_id are required", nil)
+
+	if body.CohortCohortID == 0 || len(body.OldUserIDs) == 0 || len(body.NewUserIDs) == 0 || len(body.OldUserIDs) != len(body.NewUserIDs) {
+		c.Json(w, http.StatusBadRequest, "cohort_cohort_id, old_user_ids, and new_user_ids are required and must have the same length", nil)
 		return
 	}
 
-	// --- Authenticate user ---
+	// Authenticate
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, err.Error(), nil)
@@ -124,94 +132,72 @@ func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// --- Fetch cohort ---
 	var cohort models.Cohort
 	if err := c.DB.First(&cohort, "cohort_id = ?", body.CohortCohortID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
 		return
 	}
 
-	// --- Soft-delete old supervisor assignment ---
-	var oldSupervisorAssignment models.CohortUser
-	err = c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ? AND deleted_at IS NULL",
-		body.CohortCohortID, body.OldUserID, "Supervisor").First(&oldSupervisorAssignment).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch old supervisor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-	if err == nil {
-		if err := c.DB.Model(&oldSupervisorAssignment).Update("deleted_at", time.Now()).Error; err != nil {
-			c.Json(w, http.StatusInternalServerError, "Failed to deactivate old supervisor", map[string]interface{}{"error": err.Error()})
-			return
+	assigned := []string{}
+	unassigned := []string{}
+	conflicts := []string{}
+
+	for i := range body.OldUserIDs {
+		oldID := body.OldUserIDs[i]
+		newID := body.NewUserIDs[i]
+
+		// Soft-delete old supervisor assignment
+		var oldAssign models.CohortUser
+		err := c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ? AND deleted_at IS NULL",
+			body.CohortCohortID, oldID, "Supervisor").First(&oldAssign).Error
+		if err == nil {
+			c.DB.Model(&oldAssign).Update("deleted_at", time.Now())
+			// Notify old supervisor
+			c.NotifyAndTrack(oldID, "Supervisor Reassignment",
+				fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
+				"Unassignment", "Cohort", &body.CohortCohortID, "", true,
+			)
+			var oldUser models.User
+			if err := c.DB.Preload("Profile").First(&oldUser, "user_id = ?", oldID).Error; err == nil {
+				unassigned = append(unassigned, strings.TrimSpace(oldUser.Profile.FirstName+" "+oldUser.Profile.LastName))
+			}
 		}
-	}
 
-	// --- Check if new supervisor is already assigned ---
-	var existingNew models.CohortUser
-	err = c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ? AND deleted_at IS NULL",
-		body.CohortCohortID, body.NewUserID, "Supervisor").First(&existingNew).Error
-	if err == nil {
-		c.Json(w, http.StatusConflict, "New supervisor is already assigned to this cohort", nil)
-		return
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.Json(w, http.StatusInternalServerError, "Failed to check new supervisor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// --- Assign new supervisor ---
-	newAssign := models.CohortUser{
-		UserCohortID: body.CohortCohortID,
-		MemberID:     body.NewUserID,
-		Role:         "Supervisor",
-	}
-	if err := c.DB.Create(&newAssign).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to assign new supervisor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// --- Fetch new supervisor details ---
-	var newSupervisor models.User
-	c.DB.Preload("Profile").First(&newSupervisor, "user_id = ?", body.NewUserID)
-	newSupervisorFullName := strings.TrimSpace(newSupervisor.Profile.FirstName + " " + newSupervisor.Profile.LastName)
-
-	// --- Fetch old supervisor details (if existed) ---
-	oldSupervisorFullName := "None"
-	if body.OldUserID != 0 {
-		var oldSupervisor models.User
-		if err := c.DB.Preload("Profile").First(&oldSupervisor, "user_id = ?", body.OldUserID).Error; err == nil {
-			oldSupervisorFullName = strings.TrimSpace(oldSupervisor.Profile.FirstName + " " + oldSupervisor.Profile.LastName)
+		// Check if new supervisor already exists
+		var existingNew models.CohortUser
+		err = c.DB.Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ? AND deleted_at IS NULL",
+			body.CohortCohortID, newID, "Supervisor").First(&existingNew).Error
+		if err == nil {
+			conflicts = append(conflicts, fmt.Sprintf("%d", newID))
+			continue
 		}
-	}
 
-	// --- Notify & track ---
-	c.NotifyAndTrack(newSupervisor.UserID, "Supervisor Reassignment",
-		fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
-		"Assignment", "Cohort", &body.CohortCohortID, "",
-		true,
-	)
+		// Assign new supervisor
+		newAssign := models.CohortUser{
+			UserCohortID: body.CohortCohortID,
+			MemberID:     newID,
+			Role:         "Supervisor",
+		}
+		if err := c.DB.Create(&newAssign).Error; err != nil {
+			conflicts = append(conflicts, fmt.Sprintf("%d", newID))
+			continue
+		}
 
-	if oldSupervisorFullName != "None" {
-		c.NotifyAndTrack(body.OldUserID, "Supervisor Reassignment",
-			fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
-			"Unassignment", "Cohort", &body.CohortCohortID, "",
-			true,
+		// Notify new supervisor
+		var newUser models.User
+		c.DB.Preload("Profile").First(&newUser, "user_id = ?", newID)
+		c.NotifyAndTrack(newID, "Supervisor Reassignment",
+			fmt.Sprintf("You have been assigned as supervisor for cohort '%s'", cohort.Name),
+			"Assignment", "Cohort", &body.CohortCohortID, "", true,
 		)
+		assigned = append(assigned, strings.TrimSpace(newUser.Profile.FirstName+" "+newUser.Profile.LastName))
 	}
 
-	// --- Audit metadata ---
-	metadata := map[string]interface{}{
-		"cohort_name":    cohort.Name,
-		"old_supervisor": oldSupervisorFullName,
-		"new_supervisor": newSupervisorFullName,
-		"assigned_by":    currentUser.Username,
-	}
-	_ = c.LogAudit(currentUser.UserID, "reassign_supervisor", nil, &body.CohortCohortID, nil, metadata)
-
-	// --- Return response ---
-	c.Json(w, http.StatusOK, "Supervisor reassigned successfully", map[string]interface{}{
-		"cohort_name":    cohort.Name,
-		"old_supervisor": oldSupervisorFullName,
-		"new_supervisor": newSupervisorFullName,
+	c.Json(w, http.StatusOK, "Supervisors reassignment completed", map[string]interface{}{
+		"cohort_name": cohort.Name,
+		"assigned":    assigned,
+		"unassigned":  unassigned,
+		"conflicts":   conflicts,
 	})
 }
 
@@ -219,9 +205,10 @@ func (c *Construct) ReassignSupervisorToCohort(w http.ResponseWriter, r *http.Re
 //	Supervisor Cohort Unassignments
 // ===============++++===================++============================================
 
-func (c *Construct) UnassignSupervisorFromCohort(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) UnassignSupervisorsFromCohort(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CohortCohortID uint64 `json:"cohort_cohort_id"`
+		CohortCohortID uint64   `json:"cohort_cohort_id"`
+		UserIDs        []uint64 `json:"user_ids"` // IDs of supervisors to unassign
 	}
 
 	// --- Decode request body ---
@@ -229,8 +216,8 @@ func (c *Construct) UnassignSupervisorFromCohort(w http.ResponseWriter, r *http.
 		c.Json(w, http.StatusBadRequest, "Invalid JSON body", map[string]interface{}{"error": err.Error()})
 		return
 	}
-	if body.CohortCohortID == 0 {
-		c.Json(w, http.StatusBadRequest, "cohort_cohort_id is required", nil)
+	if body.CohortCohortID == 0 || len(body.UserIDs) == 0 {
+		c.Json(w, http.StatusBadRequest, "cohort_cohort_id and user_ids are required", nil)
 		return
 	}
 
@@ -252,44 +239,49 @@ func (c *Construct) UnassignSupervisorFromCohort(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// --- Fetch current supervisor assignment (including soft-deleted) ---
-	var supervisorAssignment models.CohortUser
-	err = c.DB.Unscoped().Where("cohort_cohort_id = ? AND role = ?", body.CohortCohortID, "Supervisor").First(&supervisorAssignment).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.Json(w, http.StatusNotFound, "No supervisor assigned to this cohort", nil)
+	unassigned := []string{}
+	notFound := []string{}
+
+	for _, uid := range body.UserIDs {
+		var supervisorAssignment models.CohortUser
+		err := c.DB.Unscoped().Where("cohort_cohort_id = ? AND user_user_id = ? AND role = ?", body.CohortCohortID, uid, "Supervisor").First(&supervisorAssignment).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				notFound = append(notFound, fmt.Sprintf("%d", uid))
+				continue
+			}
+			c.Json(w, http.StatusInternalServerError, "Failed to fetch supervisor assignment", map[string]interface{}{"error": err.Error()})
 			return
 		}
-		c.Json(w, http.StatusInternalServerError, "Failed to fetch supervisor assignment", map[string]interface{}{"error": err.Error()})
-		return
+
+		// Fetch supervisor details
+		var supervisor models.User
+		supervisorFullName := "Unknown"
+		if err := c.DB.Preload("Profile").First(&supervisor, "user_id = ?", supervisorAssignment.MemberID).Error; err == nil {
+			supervisorFullName = strings.TrimSpace(supervisor.Profile.FirstName + " " + supervisor.Profile.LastName)
+		}
+
+		// Hard delete
+		if err := c.DB.Unscoped().Delete(&supervisorAssignment).Error; err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to unassign supervisor", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Notify
+		c.NotifyAndTrack(supervisor.UserID, "Cohort Unassignment",
+			fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
+			"Unassignment", "Cohort", &body.CohortCohortID, "",
+			true,
+		)
+
+		unassigned = append(unassigned, supervisorFullName)
 	}
 
-	// --- Fetch supervisor details ---
-	var supervisor models.User
-	supervisorFullName := "Unknown"
-	if err := c.DB.Preload("Profile").First(&supervisor, "user_id = ?", supervisorAssignment.MemberID).Error; err == nil {
-		supervisorFullName = strings.TrimSpace(supervisor.Profile.FirstName + " " + supervisor.Profile.LastName)
-	}
-
-	// --- Hard delete supervisor assignment ---
-	if err := c.DB.Unscoped().Delete(&supervisorAssignment).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to unassign supervisor", map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	// --- Notify, audit, and track system activity ---
-	c.NotifyAndTrack(supervisor.UserID, "Cohort Unassignment",
-		fmt.Sprintf("You have been unassigned as supervisor from cohort '%s'", cohort.Name),
-		"Unassignment", "Cohort", &body.CohortCohortID, "",
-		true)
-
-	c.Json(w, http.StatusOK, "Supervisor unassigned successfully", map[string]interface{}{
+	c.Json(w, http.StatusOK, "Supervisors unassigned successfully", map[string]interface{}{
 		"cohort_id":   cohort.CohortID,
 		"cohort_name": cohort.Name,
-		"supervisor": map[string]interface{}{
-			"id":   supervisor.UserID,
-			"name": supervisorFullName,
-		},
+		"unassigned":  unassigned,
+		"not_found":   notFound,
 	})
 }
 
