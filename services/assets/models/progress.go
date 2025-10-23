@@ -28,10 +28,11 @@ const (
 
 // report status options
 // WeeklyReport status options
+// WeeklyReport status options
 const (
 	StatusPendingVerification = "Pending Verification" // default when student submits
 	StatusApproved            = "Approved"             // supervisor approves
-	StatusRejected            = "Rejected"             // supervisor rejects
+	StatusSendBack            = "Send Back"            // supervisor sends back for revision
 )
 
 type ProgressEntity struct {
@@ -114,6 +115,12 @@ type WeeklyReport struct {
 	ReviewedByID *uint64 `gorm:"index" json:"reviewed_by_id,omitempty"`
 	ReviewedBy   *User   `gorm:"foreignKey:ReviewedByID;references:UserID" json:"reviewed_by,omitempty"`
 	DocumentURL  *string `gorm:"type:text" json:"document_url,omitempty"` // 🔹 File upload URL (PDF, CSV)
+
+	TeamInfoID *uint64 `gorm:"index" json:"team_id,omitempty"`
+	TeamInfo   *Team   `gorm:"foreignKey:TeamInfoID;references:TeamID" json:"team_info,omitempty"`
+
+	TeamLeaderReportID *uint64       `json:"team_leader_report_id,omitempty"`
+	TeamLeaderReport   *WeeklyReport `gorm:"foreignKey:TeamLeaderReportID;references:ID" json:"team_leader_report,omitempty"`
 
 	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`

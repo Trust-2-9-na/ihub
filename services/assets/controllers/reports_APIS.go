@@ -37,34 +37,53 @@ func (c *Construct) getAssignCohorts(userID uint64, roleName string) []uint64 {
 }
 
 // CreateWeeklyReport allows a student to submit a weekly report
-
 func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 	type inputStruct struct {
 		CohortID        uint64   `json:"cohort_id"`
-		WeekStartStr    string   `json:"week_start"` // date string YYYY-MM-DD
-		WeekEndStr      string   `json:"week_end"`   // date string YYYY-MM-DD
+		TeamID          *uint64  `json:"team_id,omitempty"`
+		WeekStartStr    string   `json:"week_start"`
+		WeekEndStr      string   `json:"week_end"`
 		WorkDone        string   `json:"work_done"`
 		PlannedWork     string   `json:"planned_work"`
 		NextWeek        string   `json:"next_week"`
 		Challenges      string   `json:"challenges"`
-		ProgressItemIDs []uint64 `json:"progress_item_ids"`
+		ProgressItemIDs []uint64 `json:"progress_item_ids,omitempty"`
+		DocumentURL     *string  `json:"document_url,omitempty"`
 	}
 
 	var input inputStruct
 	var documentURL *string
 
 	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "application/json") {
+
+	switch {
+	case strings.HasPrefix(contentType, "application/json"):
+		// Parse JSON body
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
-	} else if strings.HasPrefix(contentType, "multipart/form-data") {
+
+		// Validate document URL if provided
+		if input.DocumentURL != nil {
+			urlLower := strings.ToLower(*input.DocumentURL)
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			ext := filepath.Ext(urlLower)
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid document URL. Only PDF or CSV allowed.", nil)
+				return
+			}
+			documentURL = input.DocumentURL
+		}
+
+	case strings.HasPrefix(contentType, "multipart/form-data"):
+		// Parse multipart form
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
 			return
 		}
 
+		// Parse form fields
 		input.CohortID, _ = strconv.ParseUint(r.FormValue("cohort_id"), 10, 64)
 		input.WorkDone = r.FormValue("work_done")
 		input.PlannedWork = r.FormValue("planned_work")
@@ -86,13 +105,14 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		file, handler, err := r.FormFile("document")
 		if err == nil {
 			defer file.Close()
-			allowedExts := map[string]bool{".pdf": true, ".csv": true}
 			ext := strings.ToLower(filepath.Ext(handler.Filename))
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
 			if !allowedExts[ext] {
 				c.Json(w, http.StatusBadRequest, "Invalid file type. Only PDF or CSV allowed.", nil)
 				return
 			}
 
+			// Check MIME type
 			buff := make([]byte, 512)
 			if _, err := file.Read(buff); err != nil {
 				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", nil)
@@ -105,29 +125,30 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Save file
 			dateDir := time.Now().Format("20060102")
 			uploadDir := filepath.Join("uploads", "reports", dateDir)
 			os.MkdirAll(uploadDir, os.ModePerm)
-
 			filename := fmt.Sprintf("report_%d_%d%s", r.Context().Value("user_id"), time.Now().Unix(), ext)
 			filePath := filepath.Join(uploadDir, filename)
-			dest, err := os.Create(filePath)
+			dst, err := os.Create(filePath)
 			if err != nil {
 				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", nil)
 				return
 			}
-			defer dest.Close()
-			io.Copy(dest, file)
+			defer dst.Close()
+			io.Copy(dst, file)
 
 			url := fmt.Sprintf("/%s", filePath)
 			documentURL = &url
 		}
-	} else {
-		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use application/json or multipart/form-data.", nil)
+
+	default:
+		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use JSON or multipart/form-data.", nil)
 		return
 	}
 
-	// Authenticate
+	// Authenticate user
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -146,7 +167,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create Weekly Report
+	// Create weekly report
 	report := models.WeeklyReport{
 		ReportCohortID: &input.CohortID,
 		StudentID:      user.UserID,
@@ -167,7 +188,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Link Progress Items
+	// Link progress items
 	if len(input.ProgressItemIDs) > 0 {
 		var items []models.ProgressItem
 		c.DB.Where("id IN ?", input.ProgressItemIDs).Find(&items)
@@ -195,7 +216,7 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// Response
+	// Respond
 	c.Json(w, http.StatusCreated, "Weekly report submitted successfully", map[string]interface{}{
 		"data": map[string]interface{}{
 			"id":             report.ID,
@@ -215,8 +236,6 @@ func (c *Construct) CreateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 }
-
-// updating weekly reports
 
 // UpdateWeeklyReport allows a student to update their weekly report or any cohort member to add comments
 func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
@@ -240,20 +259,38 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		Challenges      *string  `json:"challenges"`
 		ProgressItemIDs []uint64 `json:"progress_item_ids"`
 		Comment         *string  `json:"comment"`
+		DocumentURL     *string  `json:"document_url"`
 	}
 	var documentURL *string
 
 	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "application/json") {
+	switch {
+	case strings.HasPrefix(contentType, "application/json"):
+		// Parse JSON body
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
-	} else if strings.HasPrefix(contentType, "multipart/form-data") {
+
+		// Validate document URL if provided
+		if input.DocumentURL != nil {
+			urlLower := strings.ToLower(*input.DocumentURL)
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			ext := filepath.Ext(urlLower)
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid document URL. Only PDF or CSV allowed.", nil)
+				return
+			}
+			documentURL = input.DocumentURL
+		}
+
+	case strings.HasPrefix(contentType, "multipart/form-data"):
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
 			return
 		}
+
+		// Parse optional "data" field as JSON
 		if data := r.FormValue("data"); data != "" {
 			if err := json.Unmarshal([]byte(data), &input); err != nil {
 				c.Json(w, http.StatusBadRequest, "Invalid JSON in 'data' field", nil)
@@ -261,23 +298,31 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Handle file upload
+		// Handle optional file upload
 		file, fileHeader, err := r.FormFile("document")
 		if err == nil {
 			defer file.Close()
+
 			ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-			if ext != ".pdf" && ext != ".csv" {
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			if !allowedExts[ext] {
 				c.Json(w, http.StatusBadRequest, "Invalid file type: only PDF or CSV allowed", nil)
 				return
 			}
-			buf := make([]byte, 512)
-			_, _ = file.Read(buf)
-			fileType := http.DetectContentType(buf)
-			file.Seek(0, io.SeekStart)
-			if !strings.Contains(fileType, "pdf") && !strings.Contains(fileType, "csv") && !strings.Contains(fileType, "text/plain") {
-				c.Json(w, http.StatusBadRequest, "Invalid file MIME type", nil)
+
+			buff := make([]byte, 512)
+			if _, err := file.Read(buff); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", nil)
 				return
 			}
+			file.Seek(0, io.SeekStart)
+
+			mimeType := http.DetectContentType(buff)
+			if mimeType != "application/pdf" && mimeType != "text/csv" && mimeType != "application/vnd.ms-excel" {
+				c.Json(w, http.StatusBadRequest, fmt.Sprintf("Invalid MIME type: %s. Only PDF or CSV allowed.", mimeType), nil)
+				return
+			}
+
 			uploadDir := filepath.Join("uploads", "reports")
 			os.MkdirAll(uploadDir, os.ModePerm)
 			savePath := filepath.Join(uploadDir, fmt.Sprintf("report_%d_%d%s", reportID, time.Now().Unix(), ext))
@@ -288,15 +333,17 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 			}
 			defer dst.Close()
 			io.Copy(dst, file)
+
 			url := fmt.Sprintf("/%s", savePath)
 			documentURL = &url
 		}
-	} else {
+
+	default:
 		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use JSON or multipart/form-data", nil)
 		return
 	}
 
-	// 3️⃣ Authenticate
+	// 3️⃣ Authenticate user
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -348,10 +395,10 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 7️⃣ Add comment (any cohort member)
+	// 7️⃣ Add comment
 	if input.Comment != nil && *input.Comment != "" {
 		comment := models.WeeklyReportComment{
-			WeeklyReportRefID: &report.ID, // <- updated
+			WeeklyReportRefID: &report.ID,
 			EditedByID:        &user.UserID,
 			Comment:           *input.Comment,
 			CreatedAt:         time.Now(),
@@ -363,7 +410,6 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		}
 		updated = true
 
-		// Notify student if commenter is not the owner
 		if report.StudentID != user.UserID {
 			c.NotifyAndTrack(
 				report.StudentID,
@@ -393,7 +439,7 @@ func (c *Construct) UpdateWeeklyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//  🔟 Respond
+	// 🔟 Respond
 	c.Json(w, http.StatusOK, "Weekly report updated successfully", map[string]interface{}{
 		"data": report,
 	})
@@ -476,11 +522,9 @@ func (c *Construct) UserHasCohortAccess(userID, cohortID uint64) bool {
 	return count > 0
 }
 
-// Reports approval or rejection
-
 // PATCH /weekly-reports/approve?id=123
-func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.Request) {
-	// 1️⃣ Parse report ID from URL vars
+func (c *Construct) ApproveOrSendBackWeeklyReport(w http.ResponseWriter, r *http.Request) {
+	// --- Parse report ID ---
 	vars := mux.Vars(r)
 	idStr, ok := vars["id"]
 	if !ok || idStr == "" {
@@ -493,109 +537,82 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 2️⃣ Parse action input
+	// --- Parse action ---
 	var input struct {
-		Action  string `json:"action"`            // "approve" or "reject"
-		Comment string `json:"comment,omitempty"` // optional for rejection
+		Action  string `json:"action"`            // "approve" or "sendback"
+		Comment string `json:"comment,omitempty"` // optional for send back
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid JSON payload", nil)
+		c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 		return
 	}
 	input.Action = strings.ToLower(input.Action)
-	if input.Action != "approve" && input.Action != "reject" {
-		c.Json(w, http.StatusBadRequest, "Action must be 'approve' or 'reject'", nil)
+	if input.Action != "approve" && input.Action != "sendback" {
+		c.Json(w, http.StatusBadRequest, "Action must be 'approve' or 'sendback'", nil)
 		return
 	}
 
-	// 3️⃣ Authenticate supervisor
+	// --- Authenticate supervisor ---
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 	if strings.ToLower(user.Role.Name) != "supervisor" {
-		c.Json(w, http.StatusForbidden, "Only supervisors can approve or reject reports", nil)
+		c.Json(w, http.StatusForbidden, "Only supervisors can approve or send back reports", nil)
 		return
 	}
 
-	// 4️⃣ Fetch report with student, cohort, and progress items
+	// --- Fetch report with progress items ---
 	var report models.WeeklyReport
 	if err := c.DB.Preload("ProgressItems").
 		Preload("Student.Profile").
-		Preload("Cohort").
+		Preload("ReportCohortInfo").
 		First(&report, reportID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Report not found", nil)
 		return
 	}
 
-	// 5️⃣ Check supervisor access to cohort
+	// --- Check supervisor access ---
 	if !c.UserHasCohortAccess(user.UserID, *report.ReportCohortID) {
 		c.Json(w, http.StatusForbidden, "You do not have access to this report", nil)
 		return
 	}
 
-	// 6️⃣ Update report status and progress items
-	report.ReviewedByID = &user.UserID
 	now := time.Now()
+	report.ReviewedByID = &user.UserID
 	report.UpdatedAt = now
 
-	// Update VerifiedStatus and recalc Performance
+	// --- Update progress items based on action ---
 	for _, item := range report.ProgressItems {
-		if item == nil {
-			continue
-		}
-
-		// Update VerifiedStatus and recalc Performance
-		// --- Update report status and progress items ---
-		now := time.Now()
-		report.UpdatedAt = now
-		report.ReviewedByID = &user.UserID
-
-		for _, item := range report.ProgressItems {
-			if item == nil {
-				continue
-			}
-
-			switch input.Action {
-			case "approve":
-				item.VerifiedStatus = "Verified"
-
-				// Recalculate item performance based on student status
-				item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
-
-			case "reject":
-				item.VerifiedStatus = "Pending Verification"
-				item.Performance = 0
-			}
-
+		switch input.Action {
+		case "approve":
+			item.VerifiedStatus = "Verified"
+			item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
 			if err := c.DB.Save(item).Error; err != nil {
 				c.Json(w, http.StatusInternalServerError, "Failed to update progress item", map[string]interface{}{"error": err.Error()})
 				return
 			}
 
-			// Normalize weights and recalc entity performance
-			if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
-				log.Println("Warning: failed to update entity performance for item", item.ID, err)
+			// Recalculate entity performance for approved items
+			if item.EntityID != nil {
+				if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
+					log.Println("Warning: failed to update entity performance for item", item.ID, err)
+				}
 			}
-		}
 
-		// Finally, update report status
-		report.Status = strings.Title(input.Action)
-		if err := c.DB.Save(&report).Error; err != nil {
-			c.Json(w, http.StatusInternalServerError, "Failed to update report", map[string]interface{}{"error": err.Error()})
-			return
+		case "sendback":
+			// Do not change VerifiedStatus or Performance
 		}
-
 	}
 
+	// --- Update report status ---
 	switch input.Action {
 	case "approve":
 		report.Status = "Approved"
-	case "reject":
-		report.Status = "Rejected"
-
-		// Add optional rejection comment
+	case "sendback":
+		report.Status = "Send Back"
+		// Optional comment for send back
 		if input.Comment != "" {
 			comment := models.WeeklyReportComment{
 				WeeklyReportRefID: &report.ID,
@@ -611,13 +628,13 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Save report
+	// --- Save report ---
 	if err := c.DB.Save(&report).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update report", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// 7️⃣ Notify student
+	// --- Notify student ---
 	c.NotifyAndTrack(
 		report.StudentID,
 		fmt.Sprintf("Your weekly report has been %s", strings.ToLower(report.Status)),
@@ -629,8 +646,8 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		true,
 	)
 
-	// 8️⃣ Build response
-	progressItems := make([]map[string]interface{}, 0, len(report.ProgressItems))
+	// --- Build progress items response ---
+	progressItemsResp := make([]map[string]interface{}, 0, len(report.ProgressItems))
 	for _, item := range report.ProgressItems {
 		entity := map[string]interface{}{}
 		if item.Entity != nil {
@@ -640,7 +657,7 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 				"entity_type": item.Entity.EntityType,
 			}
 		}
-		progressItems = append(progressItems, map[string]interface{}{
+		progressItemsResp = append(progressItemsResp, map[string]interface{}{
 			"id":              item.ID,
 			"phase_name":      item.PhaseName,
 			"progress_type":   item.ProgressType,
@@ -657,18 +674,7 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		studentName = report.Student.Profile.FirstName + " " + report.Student.Profile.LastName
 	}
 
-	reviewedBy := map[string]interface{}{}
-	if report.ReviewedByID != nil && report.ReviewedBy != nil {
-		reviewedBy = map[string]interface{}{
-			"id":         report.ReviewedBy.UserID,
-			"username":   report.ReviewedBy.Username,
-			"first_name": report.ReviewedBy.Profile.FirstName,
-			"last_name":  report.ReviewedBy.Profile.LastName,
-		}
-	} else {
-		reviewedBy = nil
-	}
-
+	// --- Build final response ---
 	resp := map[string]interface{}{
 		"id":             report.ID,
 		"cohort_id":      report.ReportCohortID,
@@ -682,10 +688,15 @@ func (c *Construct) ApproveOrRejectWeeklyReport(w http.ResponseWriter, r *http.R
 		"planned_work":   report.PlannedWork,
 		"next_week":      report.NextWeek,
 		"challenges":     report.Challenges,
-		"progress_items": progressItems,
-		"reviewed_by":    reviewedBy,
-		"created_at":     report.CreatedAt,
-		"updated_at":     report.UpdatedAt,
+		"progress_items": progressItemsResp,
+		"reviewed_by": map[string]interface{}{
+			"id":         user.UserID,
+			"username":   user.Username,
+			"first_name": user.Profile.FirstName,
+			"last_name":  user.Profile.LastName,
+		},
+		"created_at": report.CreatedAt,
+		"updated_at": report.UpdatedAt,
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Report %s successfully", strings.ToLower(report.Status)), map[string]interface{}{"data": resp})
@@ -726,7 +737,7 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 		Preload("Student.Profile").
 		Preload("Student.Role").
 		Preload("ReviewedBy.Profile").
-		Preload("Cohort").
+		Preload("ReportCohortInfo").
 		Preload("ProgressItems.Entity").
 		Preload("Comments.EditedBy.Profile").
 		Order("created_at DESC")
@@ -734,15 +745,32 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 	role := strings.ToLower(user.Role.Name)
 	switch role {
 	case "student":
+		// Students see only their own reports
 		query = query.Where("student_id = ?", user.UserID)
 
-	case "supervisor", "mentor":
-		cohortIDs := c.getAssignedCohorts(user.UserID, strings.Title(role))
+	case "mentor":
+		// Fetch student IDs assigned to this mentor
+		var assignedStudentIDs []uint64
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("mentor_ref_id = ? AND deleted_at IS NULL", user.UserID).
+			Pluck("student_ref_id", &assignedStudentIDs)
+
+		if len(assignedStudentIDs) == 0 {
+			c.Json(w, http.StatusOK, "No assigned students found", map[string]interface{}{"data": []interface{}{}})
+			return
+		}
+
+		// Filter reports to only assigned students
+		query = query.Where("student_id IN ?", assignedStudentIDs)
+
+	case "supervisor":
+		// Supervisors keep cohort logic (can reuse your getAssignedCohorts)
+		cohortIDs := c.getAssignedCohorts(user.UserID, "Supervisor")
 		if len(cohortIDs) == 0 {
 			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []interface{}{}})
 			return
 		}
-		query = query.Where("cohort_id IN ?", cohortIDs)
+		query = query.Where("report_cohort_id IN ?", cohortIDs)
 
 	default:
 		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
@@ -777,8 +805,8 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 			itemsResp = append(itemsResp, map[string]interface{}{
 				"id":              item.ID,
 				"phase_name":      item.PhaseName,
-				"student_status":  item.StudentStatus,  // ← replace 'status'
-				"verified_status": item.VerifiedStatus, // supervisor verification
+				"student_status":  item.StudentStatus,
+				"verified_status": item.VerifiedStatus,
 				"weight":          item.Weight,
 				"performance":     item.Performance,
 				"progress_type":   item.ProgressType,
@@ -789,12 +817,10 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
-		// add itemsResp to report map here
-		commentsResp := make([]map[string]interface{}, 0, len(report.Comments))
 
+		commentsResp := make([]map[string]interface{}, 0, len(report.Comments))
 		for _, cmt := range report.Comments {
 			commenter := map[string]interface{}{}
-
 			if cmt.EditedBy != nil && cmt.EditedBy.UserID != 0 && cmt.EditedBy.Profile.ProfileID != 0 {
 				commenter = map[string]interface{}{
 					"id":         cmt.EditedBy.UserID,
@@ -842,7 +868,6 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 				}
 				return nil
 			}(),
-
 			"created_at": report.CreatedAt,
 			"updated_at": report.UpdatedAt,
 		})

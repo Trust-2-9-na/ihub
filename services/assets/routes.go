@@ -168,7 +168,6 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.CreateCohortProgressEntity))).Methods("POST")
 	supervisor.Handle("/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
-	supervisor.Handle("/item/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 	supervisor.Handle("/tracking/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressEntity))).Methods("PUT")
 	supervisor.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	supervisor.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
@@ -191,11 +190,17 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/team", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetTeams))).Methods("GET")
 	supervisor.Handle("/team", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageTeamSafe))).Methods("DELETE")
 
-	// reports
+	// Individual Students reports
 	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
 	supervisor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageWeeklyReports))).Methods("DELETE")
-	supervisor.Handle("/reports/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ApproveOrRejectWeeklyReport))).Methods("PATCH")
+	supervisor.Handle("/reports/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ApproveOrSendBackWeeklyReport))).Methods("PATCH")
+
+	// Team Reports and progress items
+
+	supervisor.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetWeeklyReportsByTeam))).Methods("GET")
+	supervisor.Handle("/team/reports/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ApproveOrSendBackTeamReport))).Methods("PATCH")
+	supervisor.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 
 	// mentor feedback
 	supervisor.Handle("/mentor/feedback", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetMentorFeedback))).Methods("GET")
@@ -239,6 +244,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// team management
 	mentor.Handle("/team", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetTeams))).Methods("GET")
+	mentor.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetWeeklyReportsByTeam))).Methods("GET")
+	mentor.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 
 	// reports
 	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
@@ -267,7 +274,6 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
 	student.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetStudentProgressEntities))).Methods("GET")
-	student.Handle("/item/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ManageProgressItems))).Methods("DELETE")
 
 	student.Handle("/proposals", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateProposal))).Methods("POST")
@@ -291,10 +297,22 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// team checks
 	student.Handle("/team", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeams))).Methods("GET")
 
-	//reports
+	// Individual Student reports
+
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateWeeklyReport))).Methods("POST")
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateWeeklyReport))).Methods("PUT")
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	student.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
+
+	// Team progress Items
+	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddTeamProgressItem))).Methods("POST")
+	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateTeamProgressItem))).Methods("PUT")
+	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
+
+	// Team Reports
+
+	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateTeamWeeklyReport))).Methods("POST")
+	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateTeamWeeklyReport))).Methods("PUT")
+	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetWeeklyReportsByTeam))).Methods("GET")
 
 }

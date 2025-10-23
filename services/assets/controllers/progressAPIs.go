@@ -272,7 +272,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Verify team logic (optional) ---
+	// --- Verify team (if provided) ---
 	var team *models.Team
 	if body.TeamRefID != nil {
 		var userTeam models.UserTeam
@@ -281,7 +281,6 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 			c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
 			return
 		}
-
 		if userTeam.Role != string(models.TeamLeader) {
 			c.Json(w, http.StatusForbidden, "Only the team leader can add progress items", nil)
 			return
@@ -295,7 +294,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- Fetch parent entity ---
+	// --- Fetch entity ---
 	var entity models.ProgressEntity
 	if err := c.DB.First(&entity, body.EntityID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Progress entity not found", nil)
@@ -306,6 +305,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 	studentStatus := body.Status
 	verifiedStatus := "Pending Verification"
 
+	// Non-students auto-verified
 	if strings.ToLower(currentUser.Role.Name) != "student" {
 		studentStatus = "Completed"
 		verifiedStatus = "Verified"
@@ -328,7 +328,7 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- Calculate performance per item ---
+	// --- Calculate performance ---
 	performance := calculateItemPerformance(studentStatus, verifiedStatus)
 
 	// --- Create progress item ---
@@ -373,7 +373,6 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	} else {
-		// Individual notification
 		c.NotifyAndTrack(
 			currentUser.UserID,
 			"Progress Item Created",
@@ -386,13 +385,13 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// --- Always recalculate entity performance ---
+	// --- Always recalc entity performance ---
 	if err := c.RecalculateEntityPerformance(body.EntityID); err != nil {
 		log.Println("Warning: entity performance recalculation failed:", err)
 	}
 
 	// --- Build response ---
-	response := map[string]interface{}{
+	resp := map[string]interface{}{
 		"id":              item.ID,
 		"phase_name":      item.PhaseName,
 		"status":          item.StudentStatus,
@@ -404,10 +403,8 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 		"entity_type":     entity.EntityType,
 	}
 
-	c.Json(w, http.StatusCreated, "Progress item created successfully", map[string]interface{}{"data": response})
+	c.Json(w, http.StatusCreated, "Progress item created successfully", map[string]interface{}{"data": resp})
 }
-
-
 
 // =======++++=======================================================”””””=============
 //
@@ -558,7 +555,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PhaseName      *string    `json:"phase_name,omitempty"`
 		StudentStatus  *string    `json:"student_status,omitempty"`
-		VerifiedStatus *string    `json:"verified_status,omitempty"`
+		VerifiedStatus *string    `json:"verified_status,omitempty"` // Only non-students can update
 		Weight         *float64   `json:"weight,omitempty"`
 		DueDate        *time.Time `json:"due_date,omitempty"`
 		CompletedAt    *time.Time `json:"completed_at,omitempty"`
@@ -584,30 +581,27 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	var item models.ProgressItem
 	if err := c.DB.Preload("Entity").
 		Preload("AssignedTo").
-		Preload("TeamRef.Users.Profile").
+		Preload("TeamRef.UserTeams.UserRef.Profile").
 		First(&item, id).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Progress item not found", nil)
 		return
 	}
 
-	// --- Team-based permission check ---
+	// --- Permission checks ---
 	if item.TeamRefID != nil {
 		var userTeam models.UserTeam
-		err := c.DB.Where("team_ref_id = ? AND user_ref_id = ?", *item.TeamRefID, currentUser.UserID).First(&userTeam).Error
-		if err != nil {
+		if err := c.DB.Where("team_team_id = ? AND user_user_id = ?", *item.TeamRefID, currentUser.UserID).First(&userTeam).Error; err != nil {
 			c.Json(w, http.StatusForbidden, "You are not a member of this team", nil)
 			return
 		}
 
-		// Allow leader full access, members limited to student updates
-		if role == "student" && userTeam.Role != string(models.TeamLeader) {
+		if isStudent && userTeam.Role != string(models.TeamLeader) {
 			if item.AssignedToID == nil || *item.AssignedToID != currentUser.UserID {
 				c.Json(w, http.StatusForbidden, "Only the team leader or assigned member can update this item", nil)
 				return
 			}
 		}
 	} else {
-		// --- Non-team item permission checks ---
 		switch role {
 		case "opsadmin", "supervisor", "mentor":
 			// Full access
@@ -629,17 +623,20 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	if body.StudentStatus != nil {
 		item.StudentStatus = *body.StudentStatus
 	}
+
+	// Only non-students can update VerifiedStatus
 	if body.VerifiedStatus != nil && !isStudent {
 		prevVerified := item.VerifiedStatus
 		item.VerifiedStatus = *body.VerifiedStatus
 
-		// Calculate performance only if verified
-		if prevVerified != "Verified" && item.VerifiedStatus == "Verified" {
+		// Performance recalculation
+		if item.VerifiedStatus == "Verified" && prevVerified != "Verified" {
 			item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
-		} else if item.VerifiedStatus != "Verified" {
-			item.Performance = 0
 		}
+		// For "Send Back", keep performance same but VerifiedStatus = Pending Verification
 	}
+
+	// Other updates
 	if body.Weight != nil {
 		item.Weight = *body.Weight
 	}
@@ -656,11 +653,9 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		item.IsArchived = *body.IsArchived
 	}
 
-	// --- Always recalc performance if verified ---
-	if item.VerifiedStatus == "Verified" {
+	// --- Recalculate performance for student submissions ---
+	if isStudent || item.VerifiedStatus != "Verified" {
 		item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
-	} else {
-		item.Performance = 0
 	}
 
 	// --- Save updates ---
@@ -676,12 +671,12 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// --- Notify assigned user ---
-	if body.AssignedToID != nil {
+	// --- Notifications ---
+	if item.AssignedToID != nil {
 		c.NotifyAndTrack(
-			*body.AssignedToID,
-			"Progress Item Assignment Updated",
-			fmt.Sprintf("You have been assigned to progress item '%s' under %s '%s'",
+			*item.AssignedToID,
+			"Progress Item Updated",
+			fmt.Sprintf("You have been assigned/updated to progress item '%s' under %s '%s'",
 				item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
 			"Assignment",
 			item.Entity.EntityType,
@@ -691,7 +686,6 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// --- Notify team members if team item ---
 	if item.TeamRefID != nil {
 		var team models.Team
 		if err := c.DB.Preload("UserTeams.UserRef.Profile").First(&team, *item.TeamRefID).Error; err == nil {
@@ -725,10 +719,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		true,
 	)
 
-	// --- Response ---
-	c.Json(w, http.StatusOK, "Progress item updated successfully", map[string]interface{}{
-		"data": item,
-	})
+	c.Json(w, http.StatusOK, "Progress item updated successfully", map[string]interface{}{"data": item})
 }
 
 // =======++++=======================================================”””””=============

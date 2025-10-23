@@ -7,8 +7,6 @@ import (
 	"web/services/assets/models"
 )
 
-
-// and updates its status automatically based on verified item progress.
 func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 	var items []models.ProgressItem
 	if err := c.DB.Where("entity_id = ?", entityID).Find(&items).Error; err != nil {
@@ -18,44 +16,91 @@ func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 		return nil
 	}
 
-	// --- Normalize verified weights before computing performance ---
+	// --- Normalize weights within verified items ---
 	if err := c.NormalizeEntityWeights(entityID); err != nil {
 		log.Printf("⚠️ Weight normalization failed for entity %d: %v\n", entityID, err)
 	}
 
-	var (
-		totalPerformance float64
-		totalWeight      float64
-	)
+	// --- Map teamID -> list of items for that team ---
+	teamItemsMap := make(map[uint64][]models.ProgressItem)
+	var individualItems []models.ProgressItem
 
-	// --- Compute weighted performance (verified items only) ---
 	for _, item := range items {
 		if !strings.EqualFold(item.VerifiedStatus, "Verified") {
 			continue
 		}
 
-		weight := item.Weight
-		if weight <= 0 {
-			weight = 1
+		if item.TeamRefID != nil {
+			teamItemsMap[*item.TeamRefID] = append(teamItemsMap[*item.TeamRefID], item)
+		} else {
+			individualItems = append(individualItems, item)
+		}
+	}
+
+	// --- Calculate team performance ---
+	teamPerformances := make([]float64, 0)
+	for teamID, teamItems := range teamItemsMap {
+		var total float64
+		var weightSum float64
+
+		for _, ti := range teamItems {
+			w := ti.Weight
+			if w <= 0 {
+				w = 1
+			}
+			total += ti.Performance * w
+			weightSum += w
 		}
 
-		// Each item's performance is already a percentage (0–100)
-		totalPerformance += item.Performance * weight
-		totalWeight += weight
+		if weightSum > 0 {
+			teamPerf := total / weightSum
+			teamPerformances = append(teamPerformances, teamPerf)
+		} else {
+			teamPerformances = append(teamPerformances, 0)
+		}
+
+		// Optional: store team performance on a TeamWeeklyReport or TeamProgressEntity if needed
+		log.Printf("✅ Team %d performance: %.2f\n", teamID, teamItems[0].TeamRefID)
 	}
 
+	// --- Calculate individual item performance ---
+	var individualTotal float64
+	var individualWeight float64
+	for _, ii := range individualItems {
+		w := ii.Weight
+		if w <= 0 {
+			w = 1
+		}
+		individualTotal += ii.Performance * w
+		individualWeight += w
+	}
+	individualPerf := 0.0
+	if individualWeight > 0 {
+		individualPerf = individualTotal / individualWeight
+	}
+
+	// --- Combine team and individual performances ---
+	var allPerformances []float64
+	allPerformances = append(allPerformances, teamPerformances...)
+	if individualWeight > 0 {
+		allPerformances = append(allPerformances, individualPerf)
+	}
+
+	// --- Compute overall entity performance ---
 	entityPerformance := 0.0
-	if totalWeight > 0 {
-		entityPerformance = totalPerformance / totalWeight
-		entityPerformance = math.Round(entityPerformance*100) / 100 // round to 2 decimals
+	if len(allPerformances) > 0 {
+		var sum float64
+		for _, p := range allPerformances {
+			sum += p
+		}
+		entityPerformance = sum / float64(len(allPerformances))
+		entityPerformance = math.Round(entityPerformance*100) / 100
 	}
 
-	// --- Determine entity status based on performance ---
+	// --- Determine entity status ---
 	status := deriveEntityStatus(items)
-
-	// Auto-mark as "Completed" if performance >= 100%
-	if entityPerformance >= 100 {
-		entityPerformance = 100
+	if entityPerformance >= 1.0 {
+		entityPerformance = 1.0
 		status = models.StatusCompleted
 	}
 
@@ -69,7 +114,7 @@ func (c *Construct) UpdateEntityWeightedPerformance(entityID uint64) error {
 		return err
 	}
 
-	log.Printf("✅ Entity %d performance updated: %.2f%% (%s)\n", entityID, entityPerformance, status)
+	log.Printf("✅ Entity %d overall performance updated: %.2f (%s)\n", entityID, entityPerformance, status)
 	return nil
 }
 
