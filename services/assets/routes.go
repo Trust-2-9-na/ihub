@@ -38,6 +38,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// email verification routes
 	api.HandleFunc("/verify-email", c.VerifyEmail).Methods("GET")                     // Clickable link in email
 	api.HandleFunc("/resend-verification", c.ResendVerificationEmail).Methods("POST") // Request new token
+	api.HandleFunc("/email-verified", c.CheckEmailVerified).Methods("GET")
 
 	//---------------------------------------------------
 	// ADMIN ROUTES (SystemAdmin + OpsAdmin)

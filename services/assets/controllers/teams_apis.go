@@ -21,16 +21,16 @@ import (
 // CreateTeamInput represents the expected request body
 
 type CreateTeamInput struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	CohortRefID uint64   `json:"cohort_ref_id"` // reference to the cohort
-	LeaderID    uint64   `json:"leader_id"`     // must be a student in cohort
-	MemberIDs   []uint64 `json:"member_ids"`    // must be students in cohort
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	LinkedEntityID *uint64  `json:"linked_entity_id"`
+	CohortRefID    uint64   `json:"cohort_ref_id"` // reference to the cohort
+	LeaderID       uint64   `json:"leader_id"`     // must be a student in cohort
+	MemberIDs      []uint64 `json:"member_ids"`    // must be students in cohort
 }
 
 // CreateTeam allows a supervisor to create a team
 func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
-	// --- Get logged-in user ---
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -55,7 +55,7 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Check for duplicate team name in the same cohort ---
+	// --- Check duplicate team name ---
 	var existingTeam models.Team
 	if err := c.DB.Where("name = ? AND cohort_ref_id = ?", input.Name, input.CohortRefID).First(&existingTeam).Error; err == nil {
 		c.Json(w, http.StatusBadRequest, "A team with this name already exists in the cohort", nil)
@@ -65,7 +65,7 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Validate leader and members are in the cohort ---
+	// --- Validate leader & members belong to cohort ---
 	allStudentIDs := append(input.MemberIDs, input.LeaderID)
 	var validStudentIDs []uint64
 	err = c.DB.Model(&models.CohortUser{}).
@@ -98,20 +98,22 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 
 	// --- Create team ---
 	team := models.Team{
-		Name:        input.Name,
-		Description: input.Description,
-		CohortRefID: &input.CohortRefID,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		CreatedByID: currentUser.UserID, // <-- assign creator supervisor
+		Name:           input.Name,
+		Description:    input.Description,
+		CohortRefID:    &input.CohortRefID,
+		LinkedEntityID: input.LinkedEntityID, // link to ProgressEntity
+		CreatedByID:    currentUser.UserID,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
+
 	if err := tx.Create(&team).Error; err != nil {
 		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to create team", nil)
 		return
 	}
 
-	// --- Assign creator supervisor to the team ---
+	// --- Assign creator (supervisor) ---
 	userTeams := []models.UserTeam{
 		{
 			UserRefID: currentUser.UserID,
@@ -121,7 +123,7 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// --- Assign students including leader ---
+	// --- Assign leader & members ---
 	for _, uid := range allStudentIDs {
 		role := models.Member
 		if uid == input.LeaderID {
@@ -160,17 +162,20 @@ func (c *Construct) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// --- Response ---
 	c.Json(w, http.StatusOK, "Team created successfully", map[string]interface{}{
-		"team_id":    team.TeamID,
-		"name":       team.Name,
-		"cohort_id":  team.CohortRefID,
-		"leader_id":  input.LeaderID,
-		"member_ids": input.MemberIDs,
-		"creator_id": currentUser.UserID, // Include creator in response
+		"team_id":          team.TeamID,
+		"name":             team.Name,
+		"cohort_id":        team.CohortRefID,
+		"linked_entity_id": team.LinkedEntityID,
+		"leader_id":        input.LeaderID,
+		"member_ids":       input.MemberIDs,
+		"creator_id":       currentUser.UserID,
 	})
 }
 
 // ====================================== API for Updating a Team ================================================================
+
 func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	// --- Get logged-in user ---
 	currentUser, err := c.GetAuthenticatedUser(r)
@@ -199,7 +204,7 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 
 	// --- Fetch existing team ---
 	var team models.Team
-	if err := c.DB.Preload("UserTeams").Where("team_id = ?", req.TeamID).First(&team).Error; err != nil {
+	if err := c.DB.Preload("UserTeams").Preload("LinkedEntity").Where("team_id = ?", req.TeamID).First(&team).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Team not found", nil)
 		return
 	}
@@ -236,28 +241,42 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx := c.DB.Begin()
+
 	// --- Update team info ---
 	team.Name = req.Name
 	team.Description = req.Desc
 	team.UpdatedAt = time.Now()
-	if err := c.DB.Save(&team).Error; err != nil {
+	if err := tx.Save(&team).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to update team info", nil)
 		return
 	}
 
-	// --- Fetch current UserTeams ---
+	// --- Update associated ProgressEntity ---
+	if team.LinkedEntity != nil {
+		team.LinkedEntity.EntityName = req.Name
+		team.LinkedEntity.UpdatedAt = time.Now()
+		if err := tx.Save(&team.LinkedEntity).Error; err != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Failed to update team entity", nil)
+			return
+		}
+	}
+
+	// --- Manage team members ---
 	existingMembers := make(map[uint64]models.UserTeam)
 	var userTeams []models.UserTeam
-	c.DB.Where("team_ref_id = ?", team.TeamID).Find(&userTeams)
+	tx.Where("team_ref_id = ?", team.TeamID).Find(&userTeams)
 	for _, ut := range userTeams {
 		existingMembers[ut.UserRefID] = ut
 	}
 
 	// --- Update leader ---
 	if leaderUT, exists := existingMembers[req.LeaderID]; exists {
-		c.DB.Model(&leaderUT).Update("role", string(models.TeamLeader))
+		tx.Model(&leaderUT).Update("role", string(models.TeamLeader))
 	} else {
-		c.DB.Create(&models.UserTeam{
+		tx.Create(&models.UserTeam{
 			UserRefID: req.LeaderID,
 			TeamRefID: team.TeamID,
 			Role:      string(models.TeamLeader),
@@ -268,16 +287,14 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("You are now the leader of team '%s'.", team.Name),
 		"TeamUpdate", "Team", &team.TeamID, "Updated", true)
 
-	// --- Add new student members ---
-	// --- Add or update student members ---
+	// --- Add or update members ---
 	for _, mid := range req.MemberIDs {
 		if ut, exists := existingMembers[mid]; exists {
-			// Only update role if it's not the leader
 			if ut.Role != string(models.TeamLeader) {
-				c.DB.Model(&ut).Update("role", string(models.Member))
+				tx.Model(&ut).Update("role", string(models.Member))
 			}
 		} else {
-			c.DB.Create(&models.UserTeam{
+			tx.Create(&models.UserTeam{
 				UserRefID: mid,
 				TeamRefID: team.TeamID,
 				Role:      string(models.Member),
@@ -290,17 +307,18 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		delete(existingMembers, mid)
 	}
 
-	// --- Remove old members not in request (excluding leader and supervisors) ---
-	// Remove old members not in request (excluding leader)
+	// --- Remove old members not in request ---
 	for oldID, ut := range existingMembers {
 		if ut.Role == string(models.TeamLeader) {
 			continue
 		}
-		c.DB.Delete(&ut)
+		tx.Delete(&ut)
 		c.NotifyAndTrack(oldID, "Removed from Team",
 			fmt.Sprintf("You have been removed from team '%s'.", team.Name),
 			"TeamUpdate", "Team", &team.TeamID, "Removed", true)
 	}
+
+	tx.Commit()
 
 	// --- Respond ---
 	c.Json(w, http.StatusOK, "Team updated successfully", map[string]interface{}{
@@ -308,12 +326,14 @@ func (c *Construct) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		"name":       team.Name,
 		"leader_id":  req.LeaderID,
 		"member_ids": req.MemberIDs,
+		"entity_id":  team.LinkedEntityID,
+		"cohort_id":  team.CohortRefID,
 		"creator_id": team.CreatedByID,
+		"updated_at": team.UpdatedAt,
 	})
 }
 
-//=========================== GET Teams API ==========================================
-
+// =========================== GET Teams API ==========================================
 func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 	// --- Get logged-in user ---
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
@@ -340,7 +360,8 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 	// --- Base query ---
 	query := c.DB.Model(&models.Team{}).
 		Preload("UserTeams.UserRef.Profile").
-		Preload("CohortDetails")
+		Preload("CohortDetails").
+		Preload("LinkedEntity") // 👈 Added entity preload
 
 	// --- Filtering by query params ---
 	if teamID != "" {
@@ -404,8 +425,8 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		query = query.Where("team_id IN ?", teamIDs)
+
 	case "mentor":
-		// Get students assigned to this mentor in the cohorts they are assigned to
 		var studentIDs []uint64
 		c.DB.Model(&models.MentorStudentAssignment{}).
 			Where("mentor_ref_id = ? AND cohort_ref_id IN ?", user.UserID, c.getAssignedCohorts(user.UserID, "Mentor")).
@@ -422,7 +443,6 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Get teams for these students
 		var teamIDs []uint64
 		c.DB.Model(&models.UserTeam{}).Where("user_user_id IN ?", studentIDs).Pluck("team_team_id", &teamIDs)
 		if len(teamIDs) == 0 {
@@ -435,7 +455,6 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-
 		query = query.Where("team_id IN ?", teamIDs)
 
 	case "opsadmin":
@@ -459,7 +478,7 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Build response ---
+	// --- Build response structs ---
 	type teamMemberResp struct {
 		UserID    uint64 `json:"user_id"`
 		FirstName string `json:"first_name"`
@@ -467,15 +486,24 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 		Role      string `json:"role"`
 	}
 
+	type linkedEntityResp struct {
+		ID         uint64  `json:"id"`
+		EntityName string  `json:"entity_name"`
+		EntityType string  `json:"entity_type"`
+		CohortID   *uint64 `json:"cohort_id,omitempty"`
+		Status     string  `json:"status"`
+	}
+
 	type teamResp struct {
-		TeamID      uint64           `json:"team_id"`
-		Name        string           `json:"name"`
-		Description string           `json:"description,omitempty"`
-		Cohort      string           `json:"cohort,omitempty"`
-		Members     []teamMemberResp `json:"members,omitempty"`
-		MemberCount int              `json:"member_count"`
-		CreatedAt   string           `json:"created_at"`
-		UpdatedAt   string           `json:"updated_at"`
+		TeamID       uint64            `json:"team_id"`
+		Name         string            `json:"name"`
+		Description  string            `json:"description,omitempty"`
+		Cohort       string            `json:"cohort,omitempty"`
+		Members      []teamMemberResp  `json:"members,omitempty"`
+		MemberCount  int               `json:"member_count"`
+		LinkedEntity *linkedEntityResp `json:"linked_entity,omitempty"`
+		CreatedAt    string            `json:"created_at"`
+		UpdatedAt    string            `json:"updated_at"`
 	}
 
 	var resp []teamResp
@@ -495,6 +523,18 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 			uniqueMembers[u.UserID] = struct{}{}
 		}
 
+		var linkedEntity *linkedEntityResp
+		if t.LinkedEntity != nil {
+			e := t.LinkedEntity
+			linkedEntity = &linkedEntityResp{
+				ID:         e.ID,
+				EntityName: e.EntityName,
+				EntityType: e.EntityType,
+				CohortID:   e.EntityCohortID,
+				Status:     e.Status,
+			}
+		}
+
 		cohortName := ""
 		if t.CohortDetails != nil {
 			cohortName = t.CohortDetails.Name
@@ -504,14 +544,15 @@ func (c *Construct) GetTeams(w http.ResponseWriter, r *http.Request) {
 		totalMembersAllTeams += memberCount
 
 		resp = append(resp, teamResp{
-			TeamID:      t.TeamID,
-			Name:        t.Name,
-			Description: t.Description,
-			Cohort:      cohortName,
-			Members:     members,
-			MemberCount: memberCount,
-			CreatedAt:   t.CreatedAt.Format("2006-01-02 15:04"),
-			UpdatedAt:   t.UpdatedAt.Format("2006-01-02 15:04"),
+			TeamID:       t.TeamID,
+			Name:         t.Name,
+			Description:  t.Description,
+			Cohort:       cohortName,
+			Members:      members,
+			MemberCount:  memberCount,
+			LinkedEntity: linkedEntity,
+			CreatedAt:    t.CreatedAt.Format("2006-01-02 15:04"),
+			UpdatedAt:    t.UpdatedAt.Format("2006-01-02 15:04"),
 		})
 	}
 

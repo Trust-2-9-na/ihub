@@ -255,7 +255,6 @@ func (c *Construct) GetStudentProgressEntities(w http.ResponseWriter, r *http.Re
 }
 
 // GET Team Progress
-// GET Team Progress
 func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Request) {
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {

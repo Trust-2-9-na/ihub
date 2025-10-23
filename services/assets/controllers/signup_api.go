@@ -187,14 +187,25 @@ func (c *Construct) signupUserWithRole(
 
 		// Send email asynchronously
 		go func() {
-			body := fmt.Sprintf(
-				"Hello %s %s,<br><br>Please verify your email by clicking <a href='%s'>here</a>.<br><br>Expires in 24 hours.",
-				profile.FirstName, profile.LastName, verifyURL,
-			)
+			// Build the verification URL
+			frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
+			verifyURL := fmt.Sprintf("%s?token=%s", frontendURL, token)
+
+			// Compose email body
+			body := fmt.Sprintf(`
+		Hello %s %s,<br><br>
+		Please verify your updated email by clicking the link below:<br>
+		<a href="%s">Verify Email</a><br><br>
+		This verification link will expire in 24 hours.
+	`, profile.FirstName, profile.LastName, verifyURL)
+
+			// Send the email
 			if err := c.SendEmailNotification(user.Email, "Verify Your Email", body); err != nil {
-				log.Printf("[ERROR] Failed to send verification email to %s: %v", user.Email, err)
+				// Optionally log the error
+				fmt.Printf("Failed to send verification email to %s: %v\n", user.Email, err)
 			}
 		}()
+
 	}
 
 	// 8️⃣ Audit & notification
@@ -342,17 +353,23 @@ func (c *Construct) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	// ✅ Send verification email asynchronously
 	go func() {
-		verifyURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
-		body := fmt.Sprintf(`
-			Hello %s %s,<br><br>
-			Your account as <strong>%s</strong> has been created.<br>
-			Temporary password: <b>%s</b><br>
-			Please verify your email: <a href="%s">Verify Email</a>.<br>
-			This link expires in 24 hours.
-		`, input.FirstName, input.LastName, input.RoleName, tempPassword, verifyURL)
+		// Build the verification URL
+		frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
+		verifyURL := fmt.Sprintf("%s?token=%s", frontendURL, token)
 
+		// Compose the email body
+		body := fmt.Sprintf(`
+		Hello %s %s,<br><br>
+		Your account as <strong>%s</strong> has been created successfully.<br>
+		Temporary password: <b>%s</b><br>
+		Please verify your email by clicking the link below:<br>
+		<a href="%s">Verify Email</a><br><br>
+		This verification link will expire in 24 hours.
+	`, input.FirstName, input.LastName, input.RoleName, tempPassword, verifyURL)
+
+		// Send the email and log any errors
 		if err := c.SendEmailNotification(input.Email, "Your Account Has Been Created", body); err != nil {
-			log.Printf("[ERROR] Failed to send email to %s: %v", input.Email, err)
+			log.Printf("[ERROR] Failed to send account creation email to %s: %v", input.Email, err)
 		}
 	}()
 
@@ -481,14 +498,25 @@ func (c *Construct) UpdateUserByAdmin(w http.ResponseWriter, r *http.Request) {
 
 		// Send verification email
 		go func() {
-			verifyURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
+			// Build the verification URL
+			frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
+			verifyURL := fmt.Sprintf("%s?token=%s", frontendURL, token)
+
+			// Compose email body
 			body := fmt.Sprintf(`
-				Hello %s %s,<br><br>
-				Please verify your updated email: <a href="%s">Verify Email</a>.<br>
-				This link expires in 24 hours.
-			`, profile.FirstName, profile.LastName, verifyURL)
-			_ = c.SendEmailNotification(user.Email, "Verify Your Email", body)
+		Hello %s %s,<br><br>
+		Please verify your updated email by clicking the link below:<br>
+		<a href="%s">Verify Email</a><br><br>
+		This verification link will expire in 24 hours.
+	`, profile.FirstName, profile.LastName, verifyURL)
+
+			// Send the email
+			if err := c.SendEmailNotification(user.Email, "Verify Your Email", body); err != nil {
+				// Optionally log the error
+				fmt.Printf("Failed to send verification email to %s: %v\n", user.Email, err)
+			}
 		}()
+
 	}
 
 	// ✅ Audit & tracking

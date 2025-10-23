@@ -120,7 +120,7 @@ func (c *Construct) ResendVerificationEmail(w http.ResponseWriter, r *http.Reque
 
 	// 5️⃣ Send email asynchronously
 	go func() {
-		verifyURL := fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
+		verifyURL := fmt.Sprintf("%s?token=%s", os.Getenv("FRONTEND_URL"), token)
 		body := fmt.Sprintf(
 			"Hello %s %s,<br><br>Please verify your email by clicking <a href='%s'>here</a>.<br><br>Expires in 24 hours.",
 			user.Profile.FirstName, user.Profile.LastName, verifyURL,
@@ -131,16 +131,64 @@ func (c *Construct) ResendVerificationEmail(w http.ResponseWriter, r *http.Reque
 	}()
 
 	// 6️⃣ Audit & notify
+	fullName := fmt.Sprintf("%s %s", user.Profile.FirstName, user.Profile.LastName)
+
+	// --- 1. Notify the user ---
 	c.NotifyAndTrack(
 		user.UserID,
-		"Resent Email Verification",
-		fmt.Sprintf("Verification email resent to %s %s", user.Profile.FirstName, user.Profile.LastName),
+		"Email Verified",
+		fmt.Sprintf("Hi %s, your email (%s) has been successfully verified.", fullName, user.Email),
 		"Email Verification",
 		"User",
 		&user.UserID,
-		"Pending Verification",
+		"Verified",
+		true,
+	)
+
+	// --- 2. Log / notify admins or for auditing ---
+	c.NotifyAndTrack(
+		0, // 0 or system/admin user ID if needed
+		"User Email Verified",
+		fmt.Sprintf("User %s (%s) has verified their email.", fullName, user.Email),
+		"Email Verification",
+		"System",
+		&user.UserID,
+		"Verified",
 		true,
 	)
 
 	c.Json(w, http.StatusOK, "Verification email sent successfully", nil)
+}
+
+// CheckEmailVerifiedInput is optional if you want query param instead of path param
+type CheckEmailVerifiedInput struct {
+	UserID uint64 `json:"user_id"`
+}
+
+// CheckEmailVerified returns whether a user's email is verified
+func (c *Construct) CheckEmailVerified(w http.ResponseWriter, r *http.Request) {
+	// Get user_id from query param
+	userID, err := c.GetUintParam(r, "user_id")
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Missing or invalid user_id", nil)
+		return
+	}
+
+	// Fetch user
+	var user models.User
+	if err := c.DB.Preload("Profile").Where("user_id = ?", userID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "User not found", nil)
+		return
+	}
+
+	// Build response
+	resp := map[string]interface{}{
+		"user_id":        user.UserID,
+		"first_name":     user.Profile.FirstName,
+		"last_name":      user.Profile.LastName,
+		"email":          user.Email,
+		"email_verified": user.EmailVerified,
+	}
+
+	c.Json(w, http.StatusOK, "Email verification status fetched successfully", resp)
 }

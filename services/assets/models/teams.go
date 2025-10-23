@@ -24,6 +24,9 @@ type Team struct {
 
 	CreatedByID uint64 `gorm:"not null;index" json:"created_by_id"` // New field for tracking creator
 
+	LinkedEntityID *uint64         `gorm:"column:linked_entity_id;index" json:"linked_entity_id,omitempty"`
+	LinkedEntity   *ProgressEntity `gorm:"foreignKey:LinkedEntityID;references:ID" json:"linked_entity,omitempty"`
+
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
