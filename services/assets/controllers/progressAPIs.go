@@ -333,18 +333,18 @@ func (c *Construct) AddProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	// --- Create progress item ---
 	item := models.ProgressItem{
-		CohortRefID:    entity.EntityCohortID,
-		EntityID:       &body.EntityID,
-		ParentID:       body.ParentID,
-		PhaseName:      body.PhaseName,
-		ProgressType:   body.ProgressType,
-		StudentStatus:  studentStatus,
-		VerifiedStatus: verifiedStatus,
-		Weight:         weight,
-		Performance:    performance,
-		DueDate:        body.DueDate,
-		AssignedToID:   body.AssignedToID,
-		CreatedByID:    currentUser.UserID,
+		CohortRefID:         entity.EntityCohortID,
+		ProgressEntityRefID: &body.EntityID,
+		ParentID:            body.ParentID,
+		PhaseName:           body.PhaseName,
+		ProgressType:        body.ProgressType,
+		StudentStatus:       studentStatus,
+		VerifiedStatus:      verifiedStatus,
+		Weight:              weight,
+		Performance:         performance,
+		DueDate:             body.DueDate,
+		AssignedToID:        body.AssignedToID,
+		CreatedByID:         currentUser.UserID,
 	}
 
 	if body.TeamRefID != nil {
@@ -579,7 +579,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 
 	// --- Fetch progress item ---
 	var item models.ProgressItem
-	if err := c.DB.Preload("Entity").
+	if err := c.DB.Preload("ProgressEntityRef").
 		Preload("AssignedTo").
 		Preload("TeamRef.UserTeams.UserRef.Profile").
 		First(&item, id).Error; err != nil {
@@ -665,9 +665,9 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Recalculate entity performance if verified ---
-	if item.EntityID != nil && item.VerifiedStatus == "Verified" {
-		if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
-			log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
+	if item.ProgressEntityRefID != nil && item.VerifiedStatus == "Verified" {
+		if err := c.RecalculateEntityPerformance(*item.ProgressEntityRefID); err != nil {
+			log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.ProgressEntityRefID, err)
 		}
 	}
 
@@ -677,10 +677,10 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 			*item.AssignedToID,
 			"Progress Item Updated",
 			fmt.Sprintf("You have been assigned/updated to progress item '%s' under %s '%s'",
-				item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
+				item.PhaseName, item.ProgressEntityRef.EntityType, item.ProgressEntityRef.EntityName),
 			"Assignment",
-			item.Entity.EntityType,
-			item.EntityID,
+			item.ProgressEntityRef.EntityType,
+			item.ProgressEntityRefID,
 			item.StudentStatus,
 			true,
 		)
@@ -713,8 +713,8 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("%s updated progress item '%s' (student status: %s, verified status: %s)",
 			currentUser.Username, item.PhaseName, item.StudentStatus, item.VerifiedStatus),
 		"Update",
-		item.Entity.EntityType,
-		item.EntityID,
+		item.ProgressEntityRef.EntityType,
+		item.ProgressEntityRefID,
 		item.StudentStatus,
 		true,
 	)
@@ -761,7 +761,7 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 	// --- Fetch items (including team info) ---
 	var items []models.ProgressItem
 	if err := c.DB.
-		Preload("Entity").
+		Preload("ProgressEntityRef").
 		Preload("TeamRef.TeamMembers.User.Profile").
 		Where("id IN ?", input.ItemIDs).
 		Find(&items).Error; err != nil {
@@ -789,9 +789,9 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Archived",
-				fmt.Sprintf("Progress item '%s' in %s '%s' was archived", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
+				fmt.Sprintf("Progress item '%s' in %s '%s' was archived", item.PhaseName, item.ProgressEntityRef.EntityType, item.ProgressEntityRef.EntityName),
 				"Archive",
-				item.Entity.EntityType,
+				item.ProgressEntityRef.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
 				false,
@@ -811,9 +811,9 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Unarchived",
-				fmt.Sprintf("Progress item '%s' in %s '%s' was unarchived", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
+				fmt.Sprintf("Progress item '%s' in %s '%s' was unarchived", item.PhaseName, item.ProgressEntityRef.EntityType, item.ProgressEntityRef.EntityName),
 				"Unarchive",
-				item.Entity.EntityType,
+				item.ProgressEntityRef.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
 				false,
@@ -831,9 +831,9 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Deleted Permanently",
-				fmt.Sprintf("Progress item '%s' in %s '%s' was permanently deleted", item.PhaseName, item.Entity.EntityType, item.Entity.EntityName),
+				fmt.Sprintf("Progress item '%s' in %s '%s' was permanently deleted", item.PhaseName, item.ProgressEntityRef.EntityType, item.ProgressEntityRef.EntityName),
 				"Deletion",
-				item.Entity.EntityType,
+				item.ProgressEntityRef.EntityType,
 				&item.ID,
 				item.VerifiedStatus,
 				true,
@@ -850,9 +850,9 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		}
 
 		// --- Recalculate entity performance (if applicable) ---
-		if item.EntityID != nil {
-			if err := c.RecalculateEntityPerformance(*item.EntityID); err != nil {
-				log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.EntityID, err)
+		if item.ProgressEntityRefID != nil {
+			if err := c.RecalculateEntityPerformance(*item.ProgressEntityRefID); err != nil {
+				log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.ProgressEntityRefID, err)
 			}
 		}
 	}

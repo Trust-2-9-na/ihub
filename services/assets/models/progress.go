@@ -54,19 +54,20 @@ type ProgressEntity struct {
 	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// Relationships
-	Items []ProgressItem `gorm:"foreignKey:EntityID" json:"items,omitempty"`
+	Items []ProgressItem `gorm:"foreignKey:ProgressEntityRefID" json:"items,omitempty"`
 }
 
 // progress items for tracking
 type ProgressItem struct {
-	ID            uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
-	CohortRefID   *uint64         `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_ref_id,omitempty"`
-	CohortProfile *Cohort         `gorm:"foreignKey:CohortRefID;references:CohortID" json:"cohort_profile,omitempty"`
-	EntityID      *uint64         `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
-	Entity        *ProgressEntity `gorm:"foreignKey:EntityID;references:ID" json:"entity,omitempty"`
-	ParentID      *uint64         `gorm:"index" json:"parent_id,omitempty"`
-	PhaseName     string          `gorm:"size:255;not null" json:"phase_name"`
-	ProgressType  string          `gorm:"size:100;default:'Milestone'" json:"progress_type,omitempty"`
+	ID                  uint64          `gorm:"primaryKey;autoIncrement" json:"id"`
+	CohortRefID         *uint64         `gorm:"index;constraint:OnDelete:SET NULL;" json:"cohort_ref_id,omitempty"`
+	CohortProfile       *Cohort         `gorm:"foreignKey:CohortRefID;references:CohortID" json:"cohort_profile,omitempty"`
+	ProgressEntityRefID *uint64         `gorm:"not null;index;constraint:OnDelete:CASCADE;" json:"entity_id"`
+	ProgressEntityRef   *ProgressEntity `gorm:"foreignKey:ProgressEntityRefID;references:ID" json:"progress_entity,omitempty"`
+
+	ParentID     *uint64 `gorm:"index" json:"parent_id,omitempty"`
+	PhaseName    string  `gorm:"size:255;not null" json:"phase_name"`
+	ProgressType string  `gorm:"size:100;default:'Milestone'" json:"progress_type,omitempty"`
 
 	// 🔹 Dual-status system
 	StudentStatus  string `gorm:"size:50;not null;default:'Pending'" json:"student_status"`               // student's progress state
@@ -153,24 +154,28 @@ type WeeklyReportComment struct {
 type MentorFeedback struct {
 	ID       uint64 `gorm:"primaryKey;autoIncrement"`
 	MentorID uint64 `gorm:"index;not null"`                                      // who gave the feedback
-	Mentor   User   `gorm:"foreignKey:MentorID;references:UserID" json:"mentor"` // optional: preload mentor info
+	Mentor   User   `gorm:"foreignKey:MentorID;references:UserID" json:"mentor"` // preload mentor info
 
 	MentorReportID      *uint64       `gorm:"index" json:"mentor_report_id,omitempty"`
 	MentorReportProfile *WeeklyReport `gorm:"foreignKey:MentorReportID;references:ID" json:"mentor_report_profile,omitempty"`
 
-	ItemID *uint64       `gorm:"index"`                                                 // feedback on specific item
+	ItemID *uint64       `gorm:"index" json:"item_id,omitempty"`                        // feedback on specific item
 	Item   *ProgressItem `gorm:"foreignKey:ItemID;references:ID" json:"item,omitempty"` // optional: preload item info
 
 	Comment        string   `gorm:"type:text" json:"comment"`
-	Rating         *float64 `json:"rating,omitempty"` // optional score
+	Rating         *float64 `json:"rating,omitempty"`
 	Recommendation string   `gorm:"type:text" json:"recommendation"`
 
-	IsPublic  bool   `gorm:"default:false" json:"is_public"`   // visibility toggle
-	StudentID uint64 `gorm:"index;not null" json:"student_id"` // link to the student being evaluated
+	IsPublic  bool   `gorm:"default:false" json:"is_public"`
+	StudentID uint64 `gorm:"index;not null" json:"student_id"`
 	Student   User   `gorm:"foreignKey:StudentID;references:UserID" json:"student"`
 
+	// ✅ new fields to link feedback to cohort
+	MentorCohortID uint64  `gorm:"index;not null" json:"mentor_cohort_id"`
+	MentorCohort   *Cohort `gorm:"foreignKey:MentorCohortID;references:CohortID" json:"mentor_cohort,omitempty"`
+
+	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt  time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"` // soft delete
-	IsArchived bool           `gorm:"default:false" json:"is_archived"`
+	DeletedAt  gorm.DeletedAt `gorm:"index" json:"-"`
 }

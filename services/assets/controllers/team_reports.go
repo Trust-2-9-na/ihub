@@ -37,14 +37,23 @@ func (c *Construct) CreateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 
 	// --- Parse request body ---
 	contentType := r.Header.Get("Content-Type")
+
 	switch {
 	case strings.HasPrefix(contentType, "application/json"):
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
-		//document upload
-		documentURL = input.DocumentURL
+		// Validate JSON document URL if provided
+		if input.DocumentURL != nil {
+			ext := strings.ToLower(filepath.Ext(*input.DocumentURL))
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid document URL. Only PDF or CSV allowed.", nil)
+				return
+			}
+			documentURL = input.DocumentURL
+		}
 
 	case strings.HasPrefix(contentType, "multipart/form-data"):
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -295,7 +304,16 @@ func (c *Construct) UpdateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
 			return
 		}
-		documentURL = input.DocumentURL
+		// JSON document URL validation
+		if input.DocumentURL != nil {
+			ext := strings.ToLower(filepath.Ext(*input.DocumentURL))
+			allowedExts := map[string]bool{".pdf": true, ".csv": true}
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid document URL. Only PDF or CSV allowed.", nil)
+				return
+			}
+			documentURL = input.DocumentURL
+		}
 
 	case strings.HasPrefix(contentType, "multipart/form-data"):
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -410,8 +428,8 @@ func (c *Construct) UpdateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 		item.Performance = calculateItemPerformance(item.StudentStatus, item.VerifiedStatus)
 		c.DB.Save(&item)
 
-		if item.EntityID != nil {
-			c.RecalculateEntityPerformance(*item.EntityID)
+		if item.ProgressEntityRefID != nil {
+			c.RecalculateEntityPerformance(*item.ProgressEntityRefID)
 		}
 	}
 
@@ -469,11 +487,11 @@ func (c *Construct) UpdateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 		}
 
 		entity := map[string]interface{}{}
-		if item.Entity != nil {
+		if item.ProgressEntityRef != nil {
 			entity = map[string]interface{}{
-				"id":          item.Entity.ID,
-				"entity_name": item.Entity.EntityName,
-				"entity_type": item.Entity.EntityType,
+				"id":          item.ProgressEntityRef.ID,
+				"entity_name": item.ProgressEntityRef.EntityName,
+				"entity_type": item.ProgressEntityRef.EntityType,
 			}
 		}
 
@@ -661,9 +679,9 @@ func buildWeeklyReportResponse(reports []models.WeeklyReport) []map[string]inter
 				"performance":     item.Performance,
 				"progress_type":   item.ProgressType,
 				"entity": map[string]interface{}{
-					"id":          item.EntityID,
-					"entity_name": item.Entity.EntityName,
-					"entity_type": item.Entity.EntityType,
+					"id":          item.ProgressEntityRefID,
+					"entity_name": item.ProgressEntityRef.EntityName,
+					"entity_type": item.ProgressEntityRef.EntityType,
 				},
 			})
 		}
@@ -807,9 +825,9 @@ func (c *Construct) ApproveOrSendBackTeamReport(w http.ResponseWriter, r *http.R
 				return
 			}
 
-			if item.EntityID != nil {
+			if item.ProgressEntityRefID != nil {
 				// Update entity performance considering all verified items (including team aggregate)
-				if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
+				if err := c.UpdateEntityWeightedPerformance(*item.ProgressEntityRefID); err != nil {
 					log.Println("Warning: failed to update entity performance for item", item.ID, err)
 				}
 			}
@@ -865,11 +883,11 @@ func (c *Construct) ApproveOrSendBackTeamReport(w http.ResponseWriter, r *http.R
 	progressItemsResp := make([]map[string]interface{}, 0, len(teamReport.ProgressItems))
 	for _, item := range teamReport.ProgressItems {
 		entity := map[string]interface{}{}
-		if item.Entity != nil {
+		if item.ProgressEntityRef != nil {
 			entity = map[string]interface{}{
-				"id":          item.Entity.ID,
-				"entity_name": item.Entity.EntityName,
-				"entity_type": item.Entity.EntityType,
+				"id":          item.ProgressEntityRef.ID,
+				"entity_name": item.ProgressEntityRef.EntityName,
+				"entity_type": item.ProgressEntityRef.EntityType,
 			}
 		}
 		studentName := ""
@@ -909,4 +927,83 @@ func (c *Construct) ApproveOrSendBackTeamReport(w http.ResponseWriter, r *http.R
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Team report %s successfully", strings.ToLower(teamReport.Status)), map[string]interface{}{"data": resp})
+}
+
+//manage team reports
+
+func (c *Construct) ManageTeamReports(w http.ResponseWriter, r *http.Request) {
+	// --- Parse input ---
+	var input struct {
+		ReportIDs []uint64 `json:"report_ids"`
+		Action    string   `json:"action"` // "archive", "unarchive", "delete"
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid request body", nil)
+		return
+	}
+
+	if len(input.ReportIDs) == 0 || input.Action == "" {
+		c.Json(w, http.StatusBadRequest, "report_ids and action are required", nil)
+		return
+	}
+
+	user, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	role := strings.ToLower(user.Role.Name)
+	if role != "supervisor" && role != "opsadmin" {
+		c.Json(w, http.StatusForbidden, "Only Supervisors or OpsAdmins can manage weekly reports", nil)
+		return
+	}
+
+	// --- Fetch reports ---
+	var reports []models.WeeklyReport
+	if err := c.DB.Preload("ProgressItems").Where("id IN ?", input.ReportIDs).Find(&reports).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch weekly reports", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if len(reports) == 0 {
+		c.Json(w, http.StatusNotFound, "No weekly reports found for the given IDs", nil)
+		return
+	}
+
+	for _, report := range reports {
+		switch input.Action {
+		case "archive":
+			report.IsArchived = true
+			report.UpdatedAt = time.Now()
+			c.DB.Save(&report)
+			c.NotifyAndTrack(user.UserID, "Weekly Report Archived",
+				fmt.Sprintf("Weekly report ID %d was archived", report.ID),
+				"Archive", "WeeklyReport", &report.ID, report.Status, true,
+			)
+
+		case "unarchive":
+			report.IsArchived = false
+			report.UpdatedAt = time.Now()
+			c.DB.Save(&report)
+			c.NotifyAndTrack(user.UserID, "Weekly Report Unarchived",
+				fmt.Sprintf("Weekly report ID %d was unarchived", report.ID),
+				"Unarchive", "WeeklyReport", &report.ID, report.Status, true,
+			)
+
+		case "delete":
+			c.DB.Unscoped().Delete(&report)
+			c.NotifyAndTrack(user.UserID, "Weekly Report Deleted",
+				fmt.Sprintf("Weekly report ID %d was permanently deleted", report.ID),
+				"Deletion", "WeeklyReport", &report.ID, report.Status, true,
+			)
+
+		default:
+			c.Json(w, http.StatusBadRequest, "Invalid action, must be 'archive', 'unarchive', or 'delete'", nil)
+			return
+		}
+	}
+
+	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed on selected weekly reports successfully", input.Action), nil)
 }

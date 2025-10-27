@@ -595,8 +595,8 @@ func (c *Construct) ApproveOrSendBackWeeklyReport(w http.ResponseWriter, r *http
 			}
 
 			// Recalculate entity performance for approved items
-			if item.EntityID != nil {
-				if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
+			if item.ProgressEntityRefID != nil {
+				if err := c.UpdateEntityWeightedPerformance(*item.ProgressEntityRefID); err != nil {
 					log.Println("Warning: failed to update entity performance for item", item.ID, err)
 				}
 			}
@@ -650,11 +650,11 @@ func (c *Construct) ApproveOrSendBackWeeklyReport(w http.ResponseWriter, r *http
 	progressItemsResp := make([]map[string]interface{}, 0, len(report.ProgressItems))
 	for _, item := range report.ProgressItems {
 		entity := map[string]interface{}{}
-		if item.Entity != nil {
+		if item.ProgressEntityRef != nil {
 			entity = map[string]interface{}{
-				"id":          item.Entity.ID,
-				"entity_name": item.Entity.EntityName,
-				"entity_type": item.Entity.EntityType,
+				"id":          item.ProgressEntityRef.ID,
+				"entity_name": item.ProgressEntityRef.EntityName,
+				"entity_type": item.ProgressEntityRef.EntityType,
 			}
 		}
 		progressItemsResp = append(progressItemsResp, map[string]interface{}{
@@ -811,9 +811,9 @@ func (c *Construct) GetWeeklyReports(w http.ResponseWriter, r *http.Request) {
 				"performance":     item.Performance,
 				"progress_type":   item.ProgressType,
 				"entity": map[string]interface{}{
-					"id":          item.EntityID,
-					"entity_name": item.Entity.EntityName,
-					"entity_type": item.Entity.EntityType,
+					"id":          item.ProgressEntityRefID,
+					"entity_name": item.ProgressEntityRef.EntityName,
+					"entity_type": item.ProgressEntityRef.EntityType,
 				},
 			})
 		}

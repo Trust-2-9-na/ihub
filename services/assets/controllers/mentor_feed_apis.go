@@ -12,6 +12,27 @@ import (
 	"github.com/gorilla/mux"
 )
 
+type MentorFeedbackResponse struct {
+	ID             uint64    `json:"id"`
+	MentorID       uint64    `json:"mentor_id"`
+	MentorName     string    `json:"mentor_name"`
+	MentorEmail    string    `json:"mentor_email,omitempty"`
+	ItemID         *uint64   `json:"item_id,omitempty"`
+	ItemName       string    `json:"item_name,omitempty"` // Phase name
+	Comment        string    `json:"comment"`
+	Rating         *float64  `json:"rating,omitempty"`
+	Recommendation string    `json:"recommendation"`
+	IsPublic       bool      `json:"is_public"`
+	StudentID      uint64    `json:"student_id"`
+	StudentName    string    `json:"student_name"`
+	StudentEmail   string    `json:"student_email,omitempty"`
+	MentorCohortID uint64    `json:"mentor_cohort_id"`
+	MentorCohort   string    `json:"mentor_cohort_name,omitempty"`
+	IsArchived     bool      `json:"is_archived"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // GetSupervisorCohortIDs returns all cohort IDs that a supervisor manages
 func (c *Construct) GetSupervisorCohortIDs(supervisorID uint64) []uint64 {
 	var cohortIDs []uint64
@@ -30,16 +51,17 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Ensure user is a mentor
+	// ✅ Only mentors can create feedback
 	if strings.ToLower(user.Role.Name) != "mentor" {
 		c.Json(w, http.StatusForbidden, "Only mentors can create feedback", nil)
 		return
 	}
 
 	var input struct {
-		ReportID       *uint64  `json:"report_id,omitempty"`
+		MentorReportID *uint64  `json:"mentor_report_id,omitempty"`
 		ItemID         *uint64  `json:"item_id,omitempty"`
 		StudentID      uint64   `json:"student_id"`
+		MentorCohortID uint64   `json:"mentor_cohort_id"`
 		Comment        string   `json:"comment"`
 		Rating         *float64 `json:"rating,omitempty"`
 		Recommendation string   `json:"recommendation"`
@@ -51,16 +73,32 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if input.ReportID == nil && input.ItemID == nil {
-		c.Json(w, http.StatusBadRequest, "Either report_id or item_id must be provided", nil)
+	if input.MentorReportID == nil && input.ItemID == nil {
+		c.Json(w, http.StatusBadRequest, "Either mentor_report_id or item_id must be provided", nil)
 		return
 	}
 
+	// ✅ Verify mentor-student assignment
+	var assignmentCount int64
+	if err := c.DB.Model(&models.MentorStudentAssignment{}).
+		Where("mentor_ref_id = ? AND student_ref_id = ? AND cohort_ref_id = ?", user.UserID, input.StudentID, input.MentorCohortID).
+		Count(&assignmentCount).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to verify mentor-student assignment", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	if assignmentCount == 0 {
+		c.Json(w, http.StatusForbidden, "You are not assigned to this student in this cohort", nil)
+		return
+	}
+
+	// ✅ Create the feedback
 	feedback := models.MentorFeedback{
 		MentorID:       user.UserID,
-		MentorReportID: input.ReportID,
+		MentorReportID: input.MentorReportID,
 		ItemID:         input.ItemID,
 		StudentID:      input.StudentID,
+		MentorCohortID: input.MentorCohortID,
 		Comment:        input.Comment,
 		Rating:         input.Rating,
 		Recommendation: input.Recommendation,
@@ -74,9 +112,7 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// --- Notifications & audit/job tracking ---
-
-	// 1️⃣ Notify the student if feedback is public
+	// --- Notifications ---
 	if feedback.IsPublic {
 		c.NotifyAndTrack(
 			feedback.StudentID,
@@ -88,13 +124,8 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 			"",
 			true,
 		)
-
-		// Optional: create a job/audit record for student
-		// c.CreateJob(feedback.StudentID, "New feedback available", ...)
 	}
 
-	// 2️⃣ Notify the supervisor(s) associated with the student
-	// Assuming you have a method to fetch supervisors for this student
 	supervisorIDs := c.GetSupervisorsForStudent(feedback.StudentID)
 	for _, supID := range supervisorIDs {
 		c.NotifyAndTrack(
@@ -107,69 +138,127 @@ func (c *Construct) CreateMentorFeedback(w http.ResponseWriter, r *http.Request)
 			"",
 			true,
 		)
-
-		// Optional: create audit/job entry for supervisor
-		// c.CreateJob(supID, "Mentor feedback added", ...)
 	}
 
-	// Build response
-	response := map[string]interface{}{
-		"id":             feedback.ID,
-		"mentor_id":      feedback.MentorID,
-		"mentor_name":    user.Profile.FirstName + " " + user.Profile.LastName,
-		"student_id":     feedback.StudentID,
-		"report_id":      feedback.MentorReportID,
-		"item_id":        feedback.ItemID,
-		"comment":        feedback.Comment,
-		"rating":         feedback.Rating,
-		"recommendation": feedback.Recommendation,
-		"is_public":      feedback.IsPublic,
-		"created_at":     feedback.CreatedAt,
-		"updated_at":     feedback.UpdatedAt,
+	// --- Normalized response ---
+	type normalizedResponse struct {
+		ID             uint64    `json:"id"`
+		MentorID       uint64    `json:"mentor_id"`
+		MentorName     string    `json:"mentor_name"`
+		ItemID         *uint64   `json:"item_id,omitempty"`
+		ItemName       string    `json:"item_name,omitempty"`
+		Comment        string    `json:"comment"`
+		Rating         *float64  `json:"rating,omitempty"`
+		Recommendation string    `json:"recommendation"`
+		IsPublic       bool      `json:"is_public"`
+		StudentID      uint64    `json:"student_id"`
+		StudentName    string    `json:"student_name"`
+		MentorCohortID uint64    `json:"mentor_cohort_id"`
+		MentorCohort   string    `json:"mentor_cohort_name,omitempty"`
+		IsArchived     bool      `json:"is_archived"`
+		CreatedAt      time.Time `json:"created_at"`
+		UpdatedAt      time.Time `json:"updated_at"`
+	}
+
+	resp := normalizedResponse{
+		ID:             feedback.ID,
+		MentorID:       feedback.MentorID,
+		MentorName:     fmt.Sprintf("%s %s", user.Profile.FirstName, user.Profile.LastName), // only once
+		ItemID:         feedback.ItemID,
+		Comment:        feedback.Comment,
+		Rating:         feedback.Rating,
+		Recommendation: feedback.Recommendation,
+		IsPublic:       feedback.IsPublic,
+		StudentID:      feedback.StudentID,
+		StudentName:    "", // Will fetch below
+		MentorCohortID: feedback.MentorCohortID,
+		IsArchived:     feedback.IsArchived,
+		CreatedAt:      feedback.CreatedAt,
+		UpdatedAt:      feedback.UpdatedAt,
+	}
+
+	// Optional: fetch student name
+	var student models.User
+	if err := c.DB.Preload("Profile").First(&student, feedback.StudentID).Error; err == nil {
+		resp.StudentName = fmt.Sprintf("%s %s", student.Profile.FirstName, student.Profile.LastName)
+	}
+
+	// Optional: fetch item name
+	if feedback.ItemID != nil {
+		var item models.ProgressItem
+		if err := c.DB.First(&item, *feedback.ItemID).Error; err == nil {
+			resp.ItemName = item.PhaseName
+		}
+	}
+
+	// Optional: fetch cohort name
+	var cohort models.Cohort
+	if err := c.DB.First(&cohort, feedback.MentorCohortID).Error; err == nil {
+		resp.MentorCohort = cohort.Name
 	}
 
 	c.Json(w, http.StatusOK, "Mentor feedback created successfully", map[string]interface{}{
-		"data": response,
+		"data": resp,
 	})
 }
 
 // updating the feedback
-
 func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request) {
+	// ✅ Get authenticated user
 	user, err := c.GetAuthenticatedUser(r)
 	if err != nil {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
+	// ✅ Parse feedback ID from URL
 	feedbackIDStr := mux.Vars(r)["id"]
-	feedbackID, _ := strconv.ParseUint(feedbackIDStr, 10, 64)
+	feedbackID, err := strconv.ParseUint(feedbackIDStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid feedback ID", nil)
+		return
+	}
 
+	// ✅ Load feedback with student profile and cohort
 	var feedback models.MentorFeedback
-	if err := c.DB.Preload("Student.Profile").First(&feedback, feedbackID).Error; err != nil {
+	if err := c.DB.Preload("Student.Profile").Preload("MentorCohort").First(&feedback, feedbackID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Feedback not found", nil)
 		return
 	}
 
-	// Only the original mentor can update
+	// ✅ Only original mentor can update
 	if feedback.MentorID != user.UserID {
 		c.Json(w, http.StatusForbidden, "You can only edit your own feedback", nil)
 		return
 	}
 
+	// ✅ Verify mentor-student assignment
+	var assignmentCount int64
+	if err := c.DB.Model(&models.MentorStudentAssignment{}).
+		Where("mentor_ref_id = ? AND student_ref_id = ? AND cohort_ref_id = ?", user.UserID, feedback.StudentID, feedback.MentorCohortID).
+		Count(&assignmentCount).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to verify mentor-student assignment", map[string]interface{}{"error": err.Error()})
+		return
+	}
+	if assignmentCount == 0 {
+		c.Json(w, http.StatusForbidden, "You are not assigned to this student in this cohort", nil)
+		return
+	}
+
+	// ✅ Decode input payload
 	var input struct {
 		Comment        *string  `json:"comment,omitempty"`
 		Rating         *float64 `json:"rating,omitempty"`
 		Recommendation *string  `json:"recommendation,omitempty"`
 		IsPublic       *bool    `json:"is_public,omitempty"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		c.Json(w, http.StatusBadRequest, "Invalid JSON payload", nil)
 		return
 	}
 
-	updates := map[string]interface{}{}
+	// ✅ Prepare updates
+	updates := map[string]interface{}{"updated_at": time.Now()}
 	if input.Comment != nil {
 		updates["comment"] = *input.Comment
 	}
@@ -182,14 +271,14 @@ func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request)
 	if input.IsPublic != nil {
 		updates["is_public"] = *input.IsPublic
 	}
-	updates["updated_at"] = time.Now()
 
+	// ✅ Apply updates
 	if err := c.DB.Model(&feedback).Updates(updates).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update feedback", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// Notify student that feedback has been updated
+	// --- Notifications ---
 	c.NotifyAndTrack(
 		feedback.StudentID,
 		"Mentor Feedback Updated",
@@ -200,10 +289,7 @@ func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		"",
 		true,
 	)
-
-	// Notify supervisors of the student
-	supervisorIDs := c.GetSupervisorsForStudent(feedback.StudentID)
-	for _, supID := range supervisorIDs {
+	for _, supID := range c.GetSupervisorsForStudent(feedback.StudentID) {
 		c.NotifyAndTrack(
 			supID,
 			"Mentor Feedback Updated",
@@ -216,10 +302,41 @@ func (c *Construct) UpdateMentorFeedback(w http.ResponseWriter, r *http.Request)
 		)
 	}
 
-	c.Json(w, http.StatusOK, "Feedback updated successfully", map[string]interface{}{"data": feedback})
+	// ✅ Return normalized response
+	resp := map[string]interface{}{
+		"id":          feedback.ID,
+		"mentor_id":   feedback.MentorID,
+		"mentor_name": fmt.Sprintf("%s %s", user.Profile.FirstName, user.Profile.LastName),
+		"item_id":     feedback.ItemID,
+		"item_name": func() string {
+			if feedback.Item != nil {
+				return feedback.Item.PhaseName
+			}
+			return ""
+		}(),
+		"comment":          feedback.Comment,
+		"rating":           feedback.Rating,
+		"recommendation":   feedback.Recommendation,
+		"is_public":        feedback.IsPublic,
+		"student_id":       feedback.StudentID,
+		"student_name":     fmt.Sprintf("%s %s", feedback.Student.Profile.FirstName, feedback.Student.Profile.LastName),
+		"mentor_cohort_id": feedback.MentorCohortID,
+		"mentor_cohort_name": func() string {
+			if feedback.MentorCohort != nil {
+				return feedback.MentorCohort.Name
+			}
+			return ""
+		}(),
+		"is_archived": feedback.IsArchived,
+		"created_at":  feedback.CreatedAt,
+		"updated_at":  feedback.UpdatedAt,
+	}
+
+	c.Json(w, http.StatusOK, "Feedback updated successfully", map[string]interface{}{"data": resp})
 }
 
 // Get Feedbacks
+
 func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 	// 1️⃣ Authenticate user
 	user, err := c.GetAuthenticatedUser(r)
@@ -228,7 +345,7 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2️⃣ Optional query: filter by student
+	// 2️⃣ Optional student filter
 	studentIDStr := r.URL.Query().Get("student_id")
 	var studentID uint64
 	if studentIDStr != "" {
@@ -242,16 +359,28 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 	role := strings.ToLower(user.Role.Name)
 	var feedbacks []models.MentorFeedback
 
-	// 3️⃣ Base query for all roles except supervisor (supervisor uses custom filter)
+	// 3️⃣ Build query depending on role
 	query := c.DB.Model(&models.MentorFeedback{}).
 		Preload("Mentor.Profile").
-		Preload("Report.Cohort").
-		Preload("Item")
+		Preload("Student.Profile").
+		Preload("MentorCohort").
+		Preload("Item").
+		Order("created_at DESC")
 
 	switch role {
 	case "student":
-		// Students see their own public feedback
-		query = query.Where("student_id = ? AND is_public = ?", user.UserID, true)
+		// Students see only public feedback from their assigned mentors
+		var assignedMentorIDs []uint64
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("student_ref_id = ?", user.UserID).
+			Pluck("mentor_ref_id", &assignedMentorIDs)
+
+		if len(assignedMentorIDs) == 0 {
+			c.Json(w, http.StatusOK, "No mentor feedback found", map[string]interface{}{"data": []interface{}{}})
+			return
+		}
+
+		query = query.Where("student_id = ? AND mentor_id IN ? AND is_public = ?", user.UserID, assignedMentorIDs, true)
 
 	case "mentor":
 		// Mentors see feedback they authored
@@ -260,41 +389,27 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 			query = query.Where("student_id = ?", studentID)
 		}
 
-	case "opsadmin", "systemadmin":
-		// Admin roles see everything
+	case "supervisor":
+		// Supervisors see feedback for all students in their cohorts
+		var cohortIDs []uint64
+		c.DB.Model(&models.CohortUser{}).
+			Where("user_user_id = ? AND role = ?", user.UserID, "Supervisor").
+			Pluck("cohort_cohort_id", &cohortIDs)
+
+		if len(cohortIDs) == 0 {
+			c.Json(w, http.StatusOK, "No mentor feedbacks found for your assigned cohorts", map[string]interface{}{"data": []interface{}{}})
+			return
+		}
+
+		query = query.Where("mentor_cohort_id IN ?", cohortIDs)
 		if studentID != 0 {
 			query = query.Where("student_id = ?", studentID)
 		}
 
-	case "supervisor":
-		// Supervisors require custom access filtering — handled below
-		var allFeedbacks []models.MentorFeedback
-		err := c.DB.Model(&models.MentorFeedback{}).
-			Preload("Mentor.Profile").
-			Preload("Report.Cohort").
-			Preload("Item").
-			Find(&allFeedbacks).Error
-
-		if err != nil {
-			c.Json(w, http.StatusInternalServerError, "Failed to fetch feedbacks", map[string]interface{}{"error": err.Error()})
-			return
-		}
-
-		for _, f := range allFeedbacks {
-			if f.MentorReportProfile != nil && f.MentorReportProfile.ReportCohortID != nil {
-				// dereference pointer safely
-				cohortID := *f.MentorReportProfile.ReportCohortID
-				if c.UserHasCohortAccess(user.UserID, cohortID) {
-					if studentID == 0 || f.StudentID == studentID {
-						feedbacks = append(feedbacks, f)
-					}
-				}
-			}
-		}
-
-		if len(feedbacks) == 0 {
-			c.Json(w, http.StatusOK, "No mentor feedbacks found for your assigned cohorts", map[string]interface{}{"data": []interface{}{}})
-			return
+	case "opsadmin", "systemadmin":
+		// Admins see all feedback
+		if studentID != 0 {
+			query = query.Where("student_id = ?", studentID)
 		}
 
 	default:
@@ -302,97 +417,74 @@ func (c *Construct) GetMentorFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4️⃣ Execute query (for roles that use query builder)
-	if role != "supervisor" {
-		if err := query.Order("created_at DESC").Find(&feedbacks).Error; err != nil {
-			c.Json(w, http.StatusInternalServerError, "Failed to fetch feedbacks", map[string]interface{}{"error": err.Error()})
-			return
-		}
+	// 4️⃣ Fetch feedbacks
+	if err := query.Find(&feedbacks).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch feedbacks", map[string]interface{}{"error": err.Error()})
+		return
 	}
 
-	// 5️⃣ Build structured response
-	response := make([]map[string]interface{}, 0, len(feedbacks))
+	// 5️⃣ Normalized response struct
+	type normalizedResponse struct {
+		ID             uint64    `json:"id"`
+		MentorID       uint64    `json:"mentor_id"`
+		MentorName     string    `json:"mentor_name"`
+		ItemID         *uint64   `json:"item_id,omitempty"`
+		ItemName       string    `json:"item_name,omitempty"`
+		Comment        string    `json:"comment"`
+		Rating         *float64  `json:"rating,omitempty"`
+		Recommendation string    `json:"recommendation"`
+		IsPublic       bool      `json:"is_public"`
+		StudentID      uint64    `json:"student_id"`
+		StudentName    string    `json:"student_name"`
+		MentorCohortID uint64    `json:"mentor_cohort_id"`
+		MentorCohort   string    `json:"mentor_cohort_name,omitempty"`
+		IsArchived     bool      `json:"is_archived"`
+		CreatedAt      time.Time `json:"created_at"`
+		UpdatedAt      time.Time `json:"updated_at"`
+	}
+
+	getFullName := func(u models.User) string {
+		if u.Profile.FirstName != "" || u.Profile.LastName != "" {
+			return strings.TrimSpace(fmt.Sprintf("%s %s", u.Profile.FirstName, u.Profile.LastName))
+		}
+		if u.Username != "" {
+			return u.Username
+		}
+		return ""
+	}
+
+	response := make([]normalizedResponse, 0, len(feedbacks))
 	for _, f := range feedbacks {
-		mentorName := ""
-		if f.Mentor.Profile.ProfileID != 0 {
-			mentorName = f.Mentor.Profile.FirstName + " " + f.Mentor.Profile.LastName
+		resp := normalizedResponse{
+			ID:             f.ID,
+			MentorID:       f.MentorID,
+			MentorName:     getFullName(f.Mentor),
+			ItemID:         f.ItemID,
+			ItemName:       "",
+			Comment:        f.Comment,
+			Rating:         f.Rating,
+			Recommendation: f.Recommendation,
+			IsPublic:       f.IsPublic,
+			StudentID:      f.StudentID,
+			StudentName:    getFullName(f.Student),
+			MentorCohortID: f.MentorCohortID,
+			MentorCohort:   "",
+			IsArchived:     f.IsArchived,
+			CreatedAt:      f.CreatedAt,
+			UpdatedAt:      f.UpdatedAt,
 		}
 
-		var reportData map[string]interface{}
-		if f.MentorReportProfile != nil && f.MentorReportProfile.ReportCohortInfo != nil {
-			reportData = map[string]interface{}{
-				"id":          f.MentorReportProfile.ID,
-				"cohort_name": f.MentorReportProfile.ReportCohortInfo.Name,
-				"week_start":  f.MentorReportProfile.WeekStart,
-				"week_end":    f.MentorReportProfile.WeekEnd,
-				"status":      f.MentorReportProfile.Status,
-			}
-		}
-
-		var itemData map[string]interface{}
 		if f.Item != nil {
-			itemData = map[string]interface{}{
-				"id":              f.Item.ID,
-				"phase_name":      f.Item.PhaseName,
-				"progress_type":   f.Item.ProgressType,
-				"student_status":  f.Item.StudentStatus,
-				"verified_status": f.Item.VerifiedStatus,
-			}
+			resp.ItemName = f.Item.PhaseName
+		}
+		if f.MentorCohort != nil {
+			resp.MentorCohort = f.MentorCohort.Name
 		}
 
-		response = append(response, map[string]interface{}{
-			"id":             f.ID,
-			"mentor_id":      f.MentorID,
-			"mentor_name":    mentorName,
-			"student_id":     f.StudentID,
-			"comment":        f.Comment,
-			"rating":         f.Rating,
-			"recommendation": f.Recommendation,
-			"is_public":      f.IsPublic,
-			"report":         reportData,
-			"item":           itemData,
-			"created_at":     f.CreatedAt,
-			"updated_at":     f.UpdatedAt,
-			"is_archived":    f.IsArchived,
-		})
-
-		// 6️⃣ Log audit for each feedback viewed
-		entity := "MentorFeedback"
-		action := fmt.Sprintf("Viewed mentor feedback #%d for student #%d", f.ID, f.StudentID)
-		metadata := map[string]interface{}{
-			"student_id": f.StudentID,
-			"mentor_id":  f.MentorID,
-		}
-
-		_ = c.LogAudit(
-			user.UserID,
-			action,
-			&entity,
-			&f.ID,
-			nil,      // optional: you can pass request IP
-			metadata, // structured context
-		)
-
-		// 7️⃣ Notify mentor if supervisor views their feedback
-		if role == "supervisor" {
-			c.NotifyAndTrack(
-				f.MentorID,
-				"Feedback Viewed by Supervisor",
-				fmt.Sprintf("Supervisor %s %s viewed your feedback for student #%d.",
-					user.Profile.FirstName, user.Profile.LastName, f.StudentID),
-				"View",
-				"MentorFeedback",
-				&f.ID,
-				"Viewed",
-				false,
-			)
-		}
+		response = append(response, resp)
 	}
 
-	// 8️⃣ Send JSON response
-	c.Json(w, http.StatusOK, "Mentor feedbacks fetched successfully", map[string]interface{}{
-		"data": response,
-	})
+	c.Json(w, http.StatusOK, "Mentor feedbacks fetched successfully", map[string]interface{}{"data": response})
 }
 
 // manage feedbacks

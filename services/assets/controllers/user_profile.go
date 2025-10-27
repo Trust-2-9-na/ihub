@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
 	"web/services/utils"
@@ -171,27 +170,58 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 // UpdateProfile updates the currently logged-in user's profile
 func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	// ✅ Extract UUID from JWT context
-	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
-	if !ok || userUUID == "" {
+	viewerUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || viewerUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
-	// ✅ Parse request body
 	var input UpdateProfileInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		c.Json(w, http.StatusBadRequest, "Invalid request body", map[string]interface{}{"error": err.Error()})
+	contentType := r.Header.Get("Content-Type")
+
+	// --- Parse input ---
+	if strings.HasPrefix(contentType, "application/json") {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
+			return
+		}
+	} else if strings.HasPrefix(contentType, "multipart/form-data") {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		input.FirstName = ptr(r.FormValue("first_name"))
+		input.LastName = ptr(r.FormValue("last_name"))
+		input.Phone = ptr(r.FormValue("phone"))
+		input.Address = ptr(r.FormValue("address"))
+		input.Bio = ptr(r.FormValue("bio"))
+		input.AvatarURL = ptr(r.FormValue("avatar_url"))
+		input.School = ptr(r.FormValue("school"))
+		input.Program = ptr(r.FormValue("program"))
+		input.YearOfStudy = ptr(r.FormValue("year_of_study"))
+		input.Department = ptr(r.FormValue("department"))
+		input.Organization = ptr(r.FormValue("organization"))
+		input.Expertise = ptr(r.FormValue("expertise"))
+		input.Email = ptr(r.FormValue("email"))
+	}
+
+	// --- Load viewer ---
+	var viewer models.User
+	if err := c.DB.Preload("Profile").Where("user_uuid = ?", viewerUUID).First(&viewer).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Viewer not found", nil)
 		return
 	}
 
-	// ✅ Fetch user by UUID
+	// --- Load target user profile ---
 	var user models.User
-	if err := c.DB.Preload("Profile").
+	if err := c.DB.
+		Preload("Profile").
+		Preload("Role").
 		Preload("StudentProfile").
 		Preload("MentorProfile").
 		Preload("SupervisorProfile").
-		Where("user_uuid = ?", userUUID).
+		Where("user_uuid = ?", viewerUUID). // user is updating their own profile
 		First(&user).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "User not found", nil)
 		return
@@ -199,7 +229,7 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	profile := &user.Profile
 
-	// --- Update main profile ---
+	// --- Update shared profile fields ---
 	if input.FirstName != nil {
 		profile.FirstName = *input.FirstName
 	}
@@ -232,132 +262,126 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	// --- Update email with verification ---
 	var verifyURL string
 	if input.Email != nil && *input.Email != user.Email {
-		// Check for duplicate email
+		// Check for duplicate
 		var existing models.User
 		if err := c.DB.Where("email = ?", *input.Email).First(&existing).Error; err == nil {
 			c.Json(w, http.StatusConflict, "Email already in use", nil)
 			return
 		}
 
-		user.Email = *input.Email
-		user.EmailVerified = false
-
-		// Create verification token
 		token, _ := utils.GenerateRandomString(32)
-		verification := models.EmailVerification{
-			UserID:    user.UserID,
-			Token:     token,
-			ExpiresAt: time.Now().Add(24 * time.Hour),
-			CreatedAt: time.Now(),
-		}
-		_ = c.DB.Create(&verification)
-
-		// Verification URL
 		verifyURL = fmt.Sprintf("%s/verify-email?token=%s", os.Getenv("FRONTEND_URL"), token)
 
-		// Send verification email asynchronously
 		go func() {
 			body := fmt.Sprintf(`
-				Hello %s %s,<br><br>
-				Your email has been updated. Please verify your email by clicking <a href="%s">here</a>.<br>
-				This link expires in 24 hours.
-			`, profile.FirstName, profile.LastName, verifyURL)
-			_ = c.SendEmailNotification(user.Email, "Verify Your New Email", body)
+		Hello %s,<br><br>
+		You requested to update your email to <strong>%s</strong>.<br>
+		Please verify it by clicking the link below:<br><br>
+		<a href="%s">%s</a><br><br>
+		If you did not request this, please ignore this email.
+	`, profile.FirstName, *input.Email, verifyURL, verifyURL)
+			_ = c.SendEmailNotification(*input.Email, "Verify Your New Email", body)
 		}()
+
 	}
 
-	// --- Save main profile and user ---
+	// --- Save base profile ---
 	if err := c.DB.Save(profile).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to update profile", nil)
-		return
-	}
-	if err := c.DB.Save(&user).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to update user", nil)
+		c.Json(w, http.StatusInternalServerError, "Failed to update profile", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	// --- Role-specific updates ---
-	switch strings.ToLower(user.Role.Name) {
+	role := strings.ToLower(user.Role.Name)
+	switch role {
 	case "student":
-		if user.StudentProfile != nil {
-			if input.School != nil {
-				user.StudentProfile.School = *input.School
-			}
-			if input.Program != nil {
-				user.StudentProfile.Program = *input.Program
-			}
-			if input.YearOfStudy != nil {
-				user.StudentProfile.YearOfStudy = *input.YearOfStudy
-			}
-			c.DB.Save(user.StudentProfile)
+		if user.StudentProfile == nil {
+			user.StudentProfile = &models.StudentProfile{UserID: user.UserID}
+			c.DB.Create(user.StudentProfile)
 		}
+		if input.School != nil {
+			user.StudentProfile.School = *input.School
+		}
+		if input.Program != nil {
+			user.StudentProfile.Program = *input.Program
+		}
+		if input.YearOfStudy != nil {
+			user.StudentProfile.YearOfStudy = *input.YearOfStudy
+		}
+		c.DB.Save(user.StudentProfile)
+
 	case "mentor":
-		if user.MentorProfile != nil {
-			if input.Department != nil {
-				user.MentorProfile.Department = input.Department
-			}
-			if input.Organization != nil {
-				user.MentorProfile.Organization = *input.Organization
-			}
-			if input.Expertise != nil {
-				user.MentorProfile.Expertise = *input.Expertise
-			}
-			if input.YearsExp != nil {
-				user.MentorProfile.YearsExp = *input.YearsExp
-			}
-			c.DB.Save(user.MentorProfile)
+		if user.MentorProfile == nil {
+			user.MentorProfile = &models.MentorProfile{UserID: user.UserID}
+			c.DB.Create(user.MentorProfile)
 		}
+		if input.Department != nil {
+			user.MentorProfile.Department = input.Department
+		}
+		if input.Organization != nil {
+			user.MentorProfile.Organization = *input.Organization
+		}
+		if input.Expertise != nil {
+			user.MentorProfile.Expertise = *input.Expertise
+		}
+		if input.YearsExp != nil {
+			user.MentorProfile.YearsExp = *input.YearsExp
+		}
+		c.DB.Save(user.MentorProfile)
+
 	case "supervisor":
-		if user.SupervisorProfile != nil {
-			if input.Department != nil {
-				user.SupervisorProfile.Department = input.Department
-			}
-			if input.Organization != nil {
-				user.SupervisorProfile.Organization = *input.Organization
-			}
-			if input.Expertise != nil {
-				user.SupervisorProfile.Expertise = *input.Expertise
-			}
-			if input.YearsExp != nil {
-				user.SupervisorProfile.YearsExp = *input.YearsExp
-			}
-			c.DB.Save(user.SupervisorProfile)
+		if user.SupervisorProfile == nil {
+			user.SupervisorProfile = &models.SupervisorProfile{UserID: user.UserID}
+			c.DB.Create(user.SupervisorProfile)
 		}
-	case "opsadmin", "systemadmin":
-		// No extra fields for now, but you can extend if needed
+		if input.Department != nil {
+			user.SupervisorProfile.Department = input.Department
+		}
+		if input.Organization != nil {
+			user.SupervisorProfile.Organization = *input.Organization
+		}
+		if input.Expertise != nil {
+			user.SupervisorProfile.Expertise = *input.Expertise
+		}
+		if input.YearsExp != nil {
+			user.SupervisorProfile.YearsExp = *input.YearsExp
+		}
+		c.DB.Save(user.SupervisorProfile)
 	}
 
-	// --- Audit and notification ---
-	c.NotifyAndTrack(
-		user.UserID,
-		"Profile Updated",
-		"User updated their profile",
-		"Update",
-		"UserProfile",
-		&user.UserID,
-		"Updated",
-		true,
-	)
-
-	ip := r.RemoteAddr
-	action := "update_profile"
-	entity := "user_profile"
-	metadata := map[string]interface{}{
-		"user_id":   user.UserID,
-		"user_uuid": user.UserUUID,
-		"email":     user.Email,
+	// --- Track profile view ---
+	if viewer.UserID != user.UserID {
+		c.NotifyAndTrack(
+			viewer.UserID,
+			"Profile Viewed",
+			fmt.Sprintf("You viewed %s's profile.", user.Profile.FirstName),
+			"View",
+			"UserProfile",
+			&user.UserID,
+			"Viewed",
+			false,
+		)
 	}
-	_ = c.LogAudit(user.UserID, action, &entity, &user.UserID, &ip, metadata)
 
+	// --- Response ---
 	// --- Response ---
 	resp := map[string]interface{}{
 		"profile": profile,
 	}
+
 	if verifyURL != "" {
 		resp["verify_url"] = verifyURL
 	}
 
 	c.Json(w, http.StatusOK, "Profile updated successfully", resp)
+
+}
+
+func ptr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // UpdateAvatar handles uploading/updating a user's avatar with tracking and notifications

@@ -40,6 +40,11 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	api.HandleFunc("/resend-verification", c.ResendVerificationEmail).Methods("POST") // Request new token
 	api.HandleFunc("/email-verified", c.CheckEmailVerified).Methods("GET")
 
+	// reference data routes
+	api.HandleFunc("/lookups", c.GetAllLookups).Methods("GET")            // fetch all or filtered by types e.g category, program etc.
+	api.HandleFunc("/lookups", c.CreateLookup).Methods("POST")            // create new lookup entry
+	api.HandleFunc("/lookups/{type}/{id}", c.UpdateLookup).Methods("PUT") // update a specific lookup
+
 	//---------------------------------------------------
 	// ADMIN ROUTES (SystemAdmin + OpsAdmin)
 	// --------------------------------------------------
@@ -139,6 +144,16 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/submission-windows/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.UpdateSubmissionWindow))).Methods("PUT")
 	admin.Handle("/submission-windows", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "manage_proposals")(http.HandlerFunc(c.ManageSubmissionWindows))).Methods("DELETE")
 
+	//events management routes
+	admin.Handle("/events", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.CreateEvent))).Methods("POST")
+	admin.Handle("/events", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetEvents))).Methods("GET")         // Get All events
+	admin.Handle("/events/{id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetEventByID))).Methods("GET") // Get Events BY ID
+	admin.Handle("/manage/events", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.ManageEvents))).Methods("DELETE")
+	admin.Handle("/event/attendees", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetEventAttendees))).Methods("GET") // Get All attendees
+	admin.Handle("/mark/attendees", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.MarkEventAttendance))).Methods("PUT")
+	admin.Handle("/event/register", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.RegisterForEvents))).Methods("POST")
+	admin.Handle("/event/unregister", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.UnregisterFromEvents))).Methods("POST")
+
 	// -----------------------------
 	// SUPERVISOR ROUTES
 	// -----------------------------
@@ -147,12 +162,21 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Change password
 	supervisor.Handle("/password/change", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ChangePassword))).Methods("POST")
+	// get mentors
+
+	supervisor.Handle("/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetMentors))).Methods("GET")
 
 	supervisor.Handle("/users", middlewares.RoleAuthorization(db, []string{"Supervisor"}, "view_reports")(http.HandlerFunc(c.GetUsers))).Methods("GET")
 	supervisor.Handle("/students", middlewares.RoleAuthorization(db, []string{"Supervisor"}, "view_reports")(http.HandlerFunc(c.GetStudents))).Methods("GET")
 	supervisor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UpdateProfile))).Methods("PUT")
 	supervisor.Handle("/profile", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProfile))).Methods("GET")
 	supervisor.Handle("/profile/avatar", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetProfile))).Methods("POST")
+
+	// Events
+
+	supervisor.Handle("/events", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetEvents))).Methods("GET")
+	supervisor.Handle("/event/register", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.RegisterForEvents))).Methods("POST")
+	supervisor.Handle("/event/unregister", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UnregisterFromEvents))).Methods("POST")
 
 	supervisor.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetNotifications))).Methods("GET")
 	supervisor.Handle("/notifications/mark", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.MarkNotificationRead))).Methods("PATCH")
@@ -201,6 +225,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetWeeklyReportsByTeam))).Methods("GET")
 	supervisor.Handle("/team/reports/{id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ApproveOrSendBackTeamReport))).Methods("PATCH")
 	supervisor.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
+	supervisor.Handle("/manage/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ManageTeamReports))).Methods("DELETE")
 
 	// mentor feedback
 	supervisor.Handle("/mentor/feedback", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetMentorFeedback))).Methods("GET")
@@ -250,6 +275,12 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	// reports
 	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.AddOrReplyReportComment))).Methods("POST")
 	mentor.Handle("/weekly/reports", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.GetWeeklyReports))).Methods("GET")
+
+	// events
+
+	mentor.Handle("/events", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetEvents))).Methods("GET")
+	mentor.Handle("/event/register", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.RegisterForEvents))).Methods("POST")
+	mentor.Handle("/event/unregister", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.UnregisterFromEvents))).Methods("POST")
 
 	// -----------------------------
 	// STUDENT ROUTES
@@ -314,5 +345,11 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.CreateTeamWeeklyReport))).Methods("POST")
 	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateTeamWeeklyReport))).Methods("PUT")
 	student.Handle("/team/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetWeeklyReportsByTeam))).Methods("GET")
+
+	// events
+
+	student.Handle("/events", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetEvents))).Methods("GET") // Get All Events
+	student.Handle("/event/register", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.RegisterForEvents))).Methods("POST")
+	student.Handle("/event/unregister", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UnregisterFromEvents))).Methods("POST")
 
 }

@@ -98,18 +98,18 @@ func (c *Construct) AddTeamProgressItem(w http.ResponseWriter, r *http.Request) 
 
 	// --- Create progress item ---
 	item := models.ProgressItem{
-		CohortRefID:    entity.EntityCohortID,
-		EntityID:       &body.EntityID,
-		ParentID:       body.ParentID,
-		PhaseName:      body.PhaseName,
-		ProgressType:   body.ProgressType,
-		StudentStatus:  studentStatus,
-		VerifiedStatus: verifiedStatus,
-		Weight:         weight,
-		Performance:    performance,
-		DueDate:        body.DueDate,
-		AssignedToID:   body.AssignedToID,
-		CreatedByID:    currentUser.UserID,
+		CohortRefID:         entity.EntityCohortID,
+		ProgressEntityRefID: &body.EntityID,
+		ParentID:            body.ParentID,
+		PhaseName:           body.PhaseName,
+		ProgressType:        body.ProgressType,
+		StudentStatus:       studentStatus,
+		VerifiedStatus:      verifiedStatus,
+		Weight:              weight,
+		Performance:         performance,
+		DueDate:             body.DueDate,
+		AssignedToID:        body.AssignedToID,
+		CreatedByID:         currentUser.UserID,
 	}
 
 	if body.TeamRefID != nil {
@@ -260,19 +260,19 @@ func (c *Construct) UpdateTeamProgressItem(w http.ResponseWriter, r *http.Reques
 	}
 
 	// --- Recalculate overall team/entity performance ---
-	if item.EntityID != nil {
-		if err := c.UpdateEntityWeightedPerformance(*item.EntityID); err != nil {
+	if item.ProgressEntityRefID != nil {
+		if err := c.UpdateEntityWeightedPerformance(*item.ProgressEntityRefID); err != nil {
 			log.Println("Warning: entity performance recalculation failed:", err)
 		}
 	}
 
 	// --- Build response ---
 	entity := map[string]interface{}{}
-	if item.Entity != nil {
+	if item.ProgressEntityRef != nil {
 		entity = map[string]interface{}{
-			"id":          item.Entity.ID,
-			"entity_name": item.Entity.EntityName,
-			"entity_type": item.Entity.EntityType,
+			"id":          item.ProgressEntityRef.ID,
+			"entity_name": item.ProgressEntityRef.EntityName,
+			"entity_type": item.ProgressEntityRef.EntityType,
 		}
 	}
 

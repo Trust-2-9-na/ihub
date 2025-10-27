@@ -9,7 +9,7 @@ import (
 type Cohort struct {
 	CohortID    uint64 `gorm:"primaryKey;autoIncrement" json:"cohort_id"`
 	Name        string `gorm:"size:100;not null;unique" json:"name"`
-	Description string `gorm:"size:255" json:"description,omitempty"`
+	Description string `gorm:"type:text" json:"description,omitempty"`
 	StartDate   string `gorm:"not null" json:"start_date"`
 	EndDate     string `gorm:"not null" json:"end_date"`
 
@@ -28,7 +28,7 @@ type Cohort struct {
 type CohortUser struct {
 	UserCohortID uint64 `gorm:"column:cohort_cohort_id;primaryKey" json:"cohort_id"` // renamed from CohortID
 	MemberID     uint64 `gorm:"column:user_user_id;primaryKey" json:"user_id"`       // same as before
-	Role string `gorm:"size:50;not null" json:"role"`                    // "Student", "Mentor", "Supervisor"
+	Role         string `gorm:"size:50;not null" json:"role"`                        // "Student", "Mentor", "Supervisor"
 
 	CohortProfile Cohort `gorm:"foreignKey:UserCohortID;references:CohortID" json:"cohort_profile,omitempty"` // renamed from Cohort
 	Member        User   `gorm:"foreignKey:MemberID;references:UserID" json:"member,omitempty"`

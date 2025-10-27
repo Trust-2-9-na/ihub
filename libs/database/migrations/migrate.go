@@ -244,6 +244,33 @@ func Migrate() error {
 	}
 	log.Println("password reset table created successfully")
 
+	// 23 migrate lookup models
+
+	if err := db.AutoMigrate(
+		&models.Category{},
+		&models.Program{},
+		&models.School{},
+		&models.Expertise{},
+		&models.Subfield{},
+	); err != nil {
+		log.Printf("Migration failed for lookup tables: %v", err)
+		return err
+	}
+
+	// 24 migrate events
+	if err := db.AutoMigrate(&models.Event{}); err != nil {
+		log.Printf("Migration failed for events: %v", err)
+		return err
+	}
+	log.Println("event  table created successfully")
+
+	// 25 migrate events
+	if err := db.AutoMigrate(&models.EventAttendance{}); err != nil {
+		log.Printf("Migration failed for event Attendance: %v", err)
+		return err
+	}
+	log.Println("event attendance table created successfully")
+
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user

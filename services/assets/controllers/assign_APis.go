@@ -403,7 +403,3 @@ func (c *Construct) GetCohortSupervisors(w http.ResponseWriter, r *http.Request)
 		)
 	}
 }
-
-// ===============++++===================++============================================
-//                   	Supervisor Mentors Assignments
-// ===============++++===================++============================================

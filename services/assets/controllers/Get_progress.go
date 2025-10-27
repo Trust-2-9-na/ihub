@@ -93,15 +93,16 @@ func (c *Construct) GetStudentProgressEntities(w http.ResponseWriter, r *http.Re
 
 		// Filter only progress items for students assigned to this mentor
 		var studentIDs []uint64
-		c.DB.Model(&models.CohortUser{}).
-			Where("role = ? AND user_user_id = ?", "StudentMentor", currentUser.UserID).
-			Pluck("member_id", &studentIDs)
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("mentor_ref_id = ? AND deleted_at IS NULL", currentUser.UserID).
+			Pluck("student_ref_id", &studentIDs)
 
 		if len(studentIDs) == 0 {
 			c.Json(w, http.StatusOK, "No students assigned", map[string]interface{}{"entities": []interface{}{}})
 			return
 		}
 
+		// Use these studentIDs to filter items
 		query = query.Preload("Items", "created_by_id IN ?", studentIDs)
 
 	case "student":
