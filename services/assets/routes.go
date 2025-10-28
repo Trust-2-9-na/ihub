@@ -153,6 +153,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/mark/attendees", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.MarkEventAttendance))).Methods("PUT")
 	admin.Handle("/event/register", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.RegisterForEvents))).Methods("POST")
 	admin.Handle("/event/unregister", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.UnregisterFromEvents))).Methods("POST")
+	admin.Handle("/event/attended", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetAttendedUsers))).Methods("GET") 
+	admin.Handle("/event/absent", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetAbsentUsers))).Methods("GET") 
 
 	// -----------------------------
 	// SUPERVISOR ROUTES

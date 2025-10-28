@@ -28,7 +28,8 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user models.User
-	if err := c.DB.Preload("Profile").Preload("Role.Permissions").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+	if err := c.DB.Preload("Profile").Preload("Role.Permissions").
+		Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Could not fetch user", map[string]interface{}{"error": err.Error()})
 		return
 	}
@@ -51,7 +52,7 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- 4. Optional: Check if user has "manage_cohorts" permission ---
+	// --- 4. Permission check ---
 	hasPermission := false
 	for _, perm := range user.Role.Permissions {
 		if strings.EqualFold(perm.Name, "manage_cohorts") {
@@ -73,12 +74,32 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:   user.UserUUID,
 	}
 
-	if err := c.DB.Create(&cohort).Error; err != nil {
+	tx := c.DB.Begin()
+	if err := tx.Create(&cohort).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to create cohort", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// --- 6. Notify & Track creation ---
+	// --- 6. Auto-create ProgressEntity ---
+	entity := models.ProgressEntity{
+		EntityCohortID: &cohort.CohortID,
+		EntityName:     cohort.Name,
+		EntityType:     "Cohort",
+		Status:         "Pending",
+		ProgressType:   "Milestone",
+		AssignedToID:   nil, // optional: assign default supervisor or creator
+	}
+
+	if err := tx.Create(&entity).Error; err != nil {
+		tx.Rollback()
+		c.Json(w, http.StatusInternalServerError, "Failed to create progress entity", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	tx.Commit()
+
+	// --- 7. Notify creator ---
 	c.NotifyAndTrack(
 		user.UserID,
 		"Cohort Created",
@@ -90,41 +111,43 @@ func (c *Construct) CreateCohort(w http.ResponseWriter, r *http.Request) {
 		false,
 	)
 
-	// --- 7. Audit trail ---
-	c.DB.Create(&models.SystemHistory{
-		EntityType: "Cohort",
-		EntityID:   &cohort.CohortID,
-		Action:     "Created",
-		Status:     func() *string { s := "Active"; return &s }(),
-		Comment: func() *string {
-			s := fmt.Sprintf("Cohort '%s' created by %s %s", input.Name, user.Profile.FirstName, user.Profile.LastName)
-			return &s
-		}(),
-		ChangedByID: user.UserID,
-		CreatedAt:   time.Now(),
-	})
+	c.NotifyAndTrack(
+		user.UserID,
+		"Progress Entity Created",
+		fmt.Sprintf("A progress entity was automatically created for Cohort '%s'", cohort.Name),
+		"Create",
+		entity.EntityType,
+		&entity.ID,
+		entity.Status,
+		true,
+	)
 
-	// --- 8. Optional background job ---
-	job, _ := c.StartJob("cohort_reminder_setup", map[string]interface{}{"cohort_id": cohort.CohortID})
-	msg := "Reminder job scheduled"
-	_ = c.EndJob(job, "Completed", &msg)
-
-	// --- 9. Build response ---
+	// --- 8. Build response ---
 	resp := map[string]interface{}{
-		"cohort_id":   cohort.CohortID,
-		"name":        cohort.Name,
-		"description": cohort.Description,
-		"start_date":  cohort.StartDate,
-		"end_date":    cohort.EndDate,
-		"created_by": map[string]string{
-			"first_name": user.Profile.FirstName,
-			"last_name":  user.Profile.LastName,
-			"full_name":  user.Profile.FirstName + " " + user.Profile.LastName,
+		"cohort": map[string]interface{}{
+			"cohort_id":   cohort.CohortID,
+			"name":        cohort.Name,
+			"description": cohort.Description,
+			"start_date":  cohort.StartDate,
+			"end_date":    cohort.EndDate,
+			"created_by": map[string]string{
+				"first_name": user.Profile.FirstName,
+				"last_name":  user.Profile.LastName,
+				"full_name":  user.Profile.FirstName + " " + user.Profile.LastName,
+			},
+			"created_at": cohort.CreatedAt,
 		},
-		"created_at": cohort.CreatedAt,
+		"progress_entity": map[string]interface{}{
+			"id":            entity.ID,
+			"entity_name":   entity.EntityName,
+			"entity_type":   entity.EntityType,
+			"status":        entity.Status,
+			"progress_type": entity.ProgressType,
+			"cohort_id":     cohort.CohortID,
+		},
 	}
 
-	c.Json(w, http.StatusCreated, "Cohort created successfully", map[string]interface{}{"cohort": resp})
+	c.Json(w, http.StatusCreated, "Cohort and progress entity created successfully", resp)
 }
 
 // ------------------------------------------------
@@ -625,10 +648,11 @@ func (c *Construct) RemoveStudentFromCohort(w http.ResponseWriter, r *http.Reque
 		student.Profile.FirstName, student.Profile.LastName, cohort.Name), nil)
 }
 
-//-----------------------------------------------------------------------------------
+// -----------------------------------------------------------------------------------
+//
 //	Update Cohort API **
-//===================================================================================
-
+//
+// ===================================================================================
 func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	cohortIDStr := vars["cohort_id"]
@@ -638,7 +662,7 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Get logged-in user from middleware context ---
+	// --- Get logged-in user ---
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -647,8 +671,7 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 
 	var user models.User
 	if err := c.DB.Preload("Role").Preload("Profile").
-		Where("user_uuid = ?", userUUID).
-		First(&user).Error; err != nil {
+		Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
 		c.Json(w, http.StatusUnauthorized, "User not found", nil)
 		return
 	}
@@ -665,10 +688,20 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Start transaction ---
+	tx := c.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			c.Json(w, http.StatusInternalServerError, "Unexpected error", nil)
+		}
+	}()
+
 	// --- Fetch cohort ---
 	var cohort models.Cohort
-	if err := c.DB.Preload("Users.Role").Preload("Users.Profile").
+	if err := tx.Preload("Users.Role").Preload("Users.Profile").
 		First(&cohort, cohortID).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusNotFound, "Cohort not found", nil)
 		return
 	}
@@ -693,13 +726,24 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(changes) == 0 {
+		tx.Rollback()
 		c.Json(w, http.StatusOK, "No changes made", nil)
 		return
 	}
 
-	// --- Save updates ---
-	if err := c.DB.Save(&cohort).Error; err != nil {
+	// --- Save cohort updates ---
+	if err := tx.Save(&cohort).Error; err != nil {
+		tx.Rollback()
 		c.Json(w, http.StatusInternalServerError, "Failed to update cohort", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// --- Update linked ProgressEntity (if exists) ---
+	if err := tx.Model(&models.ProgressEntity{}).
+		Where("entity_cohort_id = ?", cohort.CohortID).
+		Update("entity_name", cohort.Name).Error; err != nil {
+		tx.Rollback()
+		c.Json(w, http.StatusInternalServerError, "Failed to update linked progress entities", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
@@ -715,7 +759,7 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 	}
 	comment := fmt.Sprintf("%s (%s) updated cohort '%s' — %s",
 		user.Profile.FirstName, user.Role.Name, cohort.Name, strings.Join(changeSummary, ", "))
-	c.DB.Create(&models.SystemHistory{
+	tx.Create(&models.SystemHistory{
 		EntityType:  "Cohort",
 		EntityID:    &cohort.CohortID,
 		Action:      "Update",
@@ -730,12 +774,18 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 		user.UserID,
 		"Cohort Updated",
 		fmt.Sprintf("Cohort '%s' has been updated.", cohort.Name),
-		"Update",         // category (action type)
-		"Cohort",         // entity type
-		&cohort.CohortID, // entity ID
+		"Update",
+		"Cohort",
+		&cohort.CohortID,
 		"Success",
-		false, // status or outcome
+		false,
 	)
+
+	// --- Commit transaction ---
+	if err := tx.Commit().Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to commit updates", map[string]interface{}{"error": err.Error()})
+		return
+	}
 
 	// --- Response ---
 	resp := map[string]interface{}{

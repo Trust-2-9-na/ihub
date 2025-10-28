@@ -271,6 +271,20 @@ func Migrate() error {
 	}
 	log.Println("event attendance table created successfully")
 
+	// 26 migrate event types registry
+	if err := db.AutoMigrate(&models.EventTypeRegistry{}); err != nil {
+		log.Printf("Migration failed for event Registry: %v", err)
+		return err
+	}
+	log.Println("event registry table created successfully")
+
+	// 27 migrate resources
+	if err := db.AutoMigrate(&models.Resource{}); err != nil {
+		log.Printf("Migration failed for resources: %v", err)
+		return err
+	}
+	log.Println("resource table created successfully")
+
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user

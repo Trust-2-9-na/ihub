@@ -428,3 +428,118 @@ func (c *Construct) GetEventAttendees(w http.ResponseWriter, r *http.Request) {
 		"attendees": attendeeList,
 	})
 }
+
+//get attended users
+
+func (c *Construct) GetAttendedUsers(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	eventIDStr := query.Get("event_id")
+
+	dbQuery := c.DB.
+		Preload("AttendeeRef.Role").
+		Preload("AttendeeRef.Profile").
+		Preload("EventRef").
+		Where("attended = ?", true)
+
+	// Optional filtering by event_id
+	if eventIDStr != "" {
+		eventID, err := strconv.ParseUint(eventIDStr, 10, 64)
+		if err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid event_id", nil)
+			return
+		}
+		dbQuery = dbQuery.Where("event_ref_id = ?", eventID)
+	}
+
+	var attendances []models.EventAttendance
+	if err := dbQuery.Find(&attendances).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch attended users", nil)
+		return
+	}
+
+	var attendedList []map[string]interface{}
+	for _, a := range attendances {
+		user := a.AttendeeRef
+		ev := a.EventRef
+
+		fullName := strings.TrimSpace(user.Profile.FirstName + " " + user.Profile.LastName)
+		if fullName == "" {
+			fullName = user.Username
+		}
+
+		attendedList = append(attendedList, map[string]interface{}{
+			"user_id":       user.UserID,
+			"full_name":     fullName,
+			"role":          user.Role.Name,
+			"attended_at":   a.CheckInAt,
+			"event_id":      ev.ID,
+			"event_title":   ev.Title,
+			"event_type":    ev.EventType,
+			"location":      ev.Location,
+			"start_time":    ev.StartTime,
+			"end_time":      ev.EndTime,
+		})
+	}
+
+	c.Json(w, http.StatusOK, "List of attendees fetched successfully", map[string]interface{}{
+		"attended": attendedList,
+	})
+}
+
+
+// Get Absent Users
+
+func (c *Construct) GetAbsentUsers(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	eventIDStr := query.Get("event_id")
+
+	dbQuery := c.DB.
+		Preload("AttendeeRef.Role").
+		Preload("AttendeeRef.Profile").
+		Preload("EventRef").
+		Where("attended = ?", false)
+
+	// Optional filtering by event_id
+	if eventIDStr != "" {
+		eventID, err := strconv.ParseUint(eventIDStr, 10, 64)
+		if err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid event_id", nil)
+			return
+		}
+		dbQuery = dbQuery.Where("event_ref_id = ?", eventID)
+	}
+
+	var attendances []models.EventAttendance
+	if err := dbQuery.Find(&attendances).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch absent users", nil)
+		return
+	}
+
+	var absentList []map[string]interface{}
+	for _, a := range attendances {
+		user := a.AttendeeRef
+		ev := a.EventRef
+
+		fullName := strings.TrimSpace(user.Profile.FirstName + " " + user.Profile.LastName)
+		if fullName == "" {
+			fullName = user.Username
+		}
+
+		absentList = append(absentList, map[string]interface{}{
+			"user_id":       user.UserID,
+			"full_name":     fullName,
+			"role":          user.Role.Name,
+			"registered_at": a.RegisteredAt,
+			"event_id":      ev.ID,
+			"event_title":   ev.Title,
+			"event_type":    ev.EventType,
+			"location":      ev.Location,
+			"start_time":    ev.StartTime,
+			"end_time":      ev.EndTime,
+		})
+	}
+
+	c.Json(w, http.StatusOK, "List of absent users fetched successfully", map[string]interface{}{
+		"absent": absentList,
+	})
+}

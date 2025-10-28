@@ -66,3 +66,13 @@ type EventAttendance struct {
 	Attended  bool       `gorm:"default:false" json:"attended"`
 	CheckInAt *time.Time `json:"check_in_at,omitempty"`
 }
+
+
+// event registry
+
+type EventTypeRegistry struct {
+	ID          uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name        string    `gorm:"uniqueIndex;size:50;not null" json:"name"`
+	CreatedByID uint64    `json:"created_by_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}

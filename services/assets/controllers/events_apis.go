@@ -11,9 +11,12 @@ import (
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
+	"errors"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/mux"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 // ==========================================================================================
@@ -66,16 +69,33 @@ func (c *Construct) CreateEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- 5. Validate event type ---
-	validTypes := map[string]bool{
+	// --- 5. Validate event type ----
+	// Predefined valid event types
+	predefinedTypes := map[string]bool{
 		models.EventTypeWorkshop: true,
 		models.EventTypeDemo:     true,
 		models.EventTypePitchDay: true,
 		models.EventTypeSeminar:  true,
 	}
-	if !validTypes[input.EventType] {
-		c.Json(w, http.StatusBadRequest, "Invalid event type", nil)
-		return
+
+	// Check if it's predefined or custom
+	isPredefined := predefinedTypes[input.EventType]
+	if !isPredefined {
+		// Optional: sanitize custom input
+		customType := strings.TrimSpace(strings.Title(strings.ToLower(input.EventType)))
+		if len(customType) < 3 || len(customType) > 50 {
+			c.Json(w, http.StatusBadRequest, "Invalid custom event type length (must be 3–50 chars)", nil)
+			return
+		}
+		// (Optional) Persist custom event type for future selection
+		var existingType models.EventTypeRegistry
+		if err := c.DB.Where("LOWER(name) = ?", strings.ToLower(customType)).First(&existingType).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				newType := models.EventTypeRegistry{Name: customType, CreatedByID: user.UserID}
+				c.DB.Create(&newType)
+			}
+		}
+		input.EventType = customType
 	}
 
 	// --- 6. Validate visibility ---
@@ -242,6 +262,12 @@ func (c *Construct) GetEvents(w http.ResponseWriter, r *http.Request) {
 	var events []models.Event
 	query := c.DB.Preload("CreatedBy.Profile").Preload("CohortRef")
 
+	// --- Optional: filter by event_type ---
+	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+	if eventType != "" {
+		query = query.Where("LOWER(event_type) = ?", strings.ToLower(eventType))
+	}
+
 	if userRole == "systemadmin" || userRole == "opsadmin" {
 		// Admins see all events
 		if err := query.Order("start_time DESC").Find(&events).Error; err != nil {
@@ -320,7 +346,6 @@ func (c *Construct) GetEventByID(w http.ResponseWriter, r *http.Request) {
 		c.Json(w, http.StatusNotFound, "Event not found", nil)
 		return
 	}
-
 	userRole := strings.ToLower(user.Role.Name)
 
 	// --- Visibility check ---
@@ -450,17 +475,41 @@ func (c *Construct) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 
 	// --- 4. Validate enums ---
 	if input.EventType != nil {
-		validTypes := map[string]bool{
+		predefinedTypes := map[string]bool{
 			models.EventTypeWorkshop: true,
 			models.EventTypeDemo:     true,
 			models.EventTypePitchDay: true,
 			models.EventTypeSeminar:  true,
 		}
-		if !validTypes[*input.EventType] {
-			c.Json(w, http.StatusBadRequest, "Invalid event type", nil)
-			return
+
+		eventType := strings.TrimSpace(*input.EventType)
+
+		if !predefinedTypes[eventType] {
+			// Allow custom event types — sanitize & validate
+			customType := strings.Title(strings.ToLower(eventType))
+			if len(customType) < 3 || len(customType) > 50 {
+				c.Json(w, http.StatusBadRequest, "Invalid custom event type length (must be 3–50 chars)", nil)
+				return
+			}
+
+			// Optional: Store custom event type in registry (for reuse)
+			var existingType models.EventTypeRegistry
+			if err := c.DB.Where("LOWER(name) = ?", strings.ToLower(customType)).
+				First(&existingType).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					newType := models.EventTypeRegistry{
+						Name:        customType,
+						CreatedByID: user.UserID,
+						CreatedAt:   time.Now(),
+					}
+					c.DB.Create(&newType)
+				}
+			}
+
+			event.EventType = customType
+		} else {
+			event.EventType = eventType
 		}
-		event.EventType = *input.EventType
 	}
 
 	if input.Visibility != nil {

@@ -37,10 +37,11 @@ const (
 
 type ProgressEntity struct {
 	ID             uint64  `gorm:"primaryKey;autoIncrement" json:"id"`
-	EntityCohortID *uint64 `gorm:"column:cohort_cohort_id;primaryKey" json:"cohort_id"`
+	EntityCohortID *uint64 `gorm:"index" json:"cohort_id"`
 	EntityCohort   *Cohort `gorm:"foreignKey:EntityCohortID;references:CohortID" json:"cohort_profile,omitempty"`
-	AssignedToID   *uint64 `gorm:"index" json:"assigned_to_id,omitempty"`
-	AssignedTo     *User   `gorm:"foreignKey:AssignedToID;references:UserID" json:"assigned_to,omitempty"`
+
+	AssignedToID *uint64 `gorm:"index" json:"assigned_to_id,omitempty"`
+	AssignedTo   *User   `gorm:"foreignKey:AssignedToID;references:UserID" json:"assigned_to,omitempty"`
 
 	EntityName   string         `gorm:"size:255;not null" json:"entity_name"`       // e.g. "Cohort_2025"
 	EntityType   string         `gorm:"size:100;not null;index" json:"entity_type"` // e.g. "Cohort", "Proposal", "Event"
