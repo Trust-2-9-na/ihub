@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func (c *Construct) GetStudentProgressEntities(w http.ResponseWriter, r *http.Request) {
+func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Request) {
 	// --- Auth ---
 	currentUser, err := c.GetAuthenticatedUser(r)
 	if err != nil {

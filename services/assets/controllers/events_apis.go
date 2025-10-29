@@ -660,6 +660,7 @@ func (c *Construct) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 // manage Events By Admins
+
 func (c *Construct) ManageEvents(w http.ResponseWriter, r *http.Request) {
 	// --- 1. Parse input ---
 	var input struct {

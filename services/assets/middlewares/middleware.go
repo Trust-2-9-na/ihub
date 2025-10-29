@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"web/services/assets/models"
 	"web/services/utils"
 
@@ -15,8 +16,9 @@ import (
 type contextKey string
 
 const userUUIDKey contextKey = "user_uuid"
+const sessionUUIDKey contextKey = "session_uuid"
 
-// RoleAuthorization validates JWT, checks allowed roles, active status, and optional permissions
+// RoleAuthorizationWithSession validates JWT + session, checks roles & optional permissions
 func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,19 +30,14 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 
 			tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
 
-			// Validate JWT
+			// 1️⃣ Validate JWT
 			claims, err := utils.ValidateJWT(tokenString)
 			if err != nil {
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
 				return
 			}
 
-			if claims.Role == "" {
-				http.Error(w, "Access denied: role missing", http.StatusForbidden)
-				return
-			}
-
-			// Fetch user from DB with permissions
+			// 2️⃣ Fetch user from DB
 			var user models.User
 			if err := db.Preload("Role.Permissions").Where("user_uuid = ?", claims.UserUUID).First(&user).Error; err != nil {
 				http.Error(w, "User not found", http.StatusUnauthorized)
@@ -53,7 +50,28 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 				return
 			}
 
-			// Check allowed roles
+			// 3️⃣ Validate session cookie
+			cookie, err := r.Cookie("session_id")
+			if err != nil {
+				http.Error(w, "Session not found", http.StatusUnauthorized)
+				return
+			}
+
+			var session models.Session
+			if err := db.Where("session_uuid = ? AND is_active = ?", cookie.Value, true).First(&session).Error; err != nil {
+				http.Error(w, "Invalid session", http.StatusUnauthorized)
+				return
+			}
+
+			// Check session expiration
+			if time.Now().After(session.ExpiresAt) {
+				// Optionally deactivate expired session
+				db.Model(&session).Update("is_active", false)
+				http.Error(w, "Session expired", http.StatusUnauthorized)
+				return
+			}
+
+			// 4️⃣ Role check
 			roleAllowed := false
 			for _, role := range allowedRoles {
 				if strings.EqualFold(user.Role.Name, role) {
@@ -67,7 +85,7 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 				return
 			}
 
-			// Check required permissions if provided
+			// 5️⃣ Permission check (optional)
 			if len(requiredPermissions) > 0 {
 				hasPermission := false
 				for _, perm := range user.Role.Permissions {
@@ -88,15 +106,25 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 				}
 			}
 
-			// Store UserUUID in context using custom key type
+			// 6️⃣ Optional: Update session last active timestamp for sliding expiration
+			db.Model(&session).Update("last_active_at", time.Now())
+
+			// 7️⃣ Store user & session info in context
 			ctx := context.WithValue(r.Context(), userUUIDKey, user.UserUUID)
+			ctx = context.WithValue(ctx, sessionUUIDKey, session.SessionUUID)
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// Helper function to retrieve UserUUID from context
+// Helper functions to retrieve values from context
 func GetUserUUIDFromContext(ctx context.Context) (string, bool) {
 	uuid, ok := ctx.Value(userUUIDKey).(string)
 	return uuid, ok
+}
+
+func GetSessionUUIDFromContext(ctx context.Context) (string, bool) {
+	sessionID, ok := ctx.Value(sessionUUIDKey).(string)
+	return sessionID, ok
 }

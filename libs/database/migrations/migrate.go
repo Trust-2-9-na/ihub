@@ -285,6 +285,13 @@ func Migrate() error {
 	}
 	log.Println("resource table created successfully")
 
+	// 28 migrate resources
+	if err := db.AutoMigrate(&models.Session{}); err != nil {
+		log.Printf("Migration failed for sessions: %v", err)
+		return err
+	}
+	log.Println("session table created successfully")
+
 	log.Println("All migrations ran successfully!")
 
 	// Seed admin user

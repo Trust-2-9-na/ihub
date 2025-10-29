@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"web/services/assets/middlewares"
 	"web/services/assets/models"
 	"web/services/utils"
@@ -247,8 +248,10 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Update avatar if provided ---
-	if input.AvatarURL != nil && *input.AvatarURL != "" {
-		ext := strings.ToLower(filepath.Ext(*input.AvatarURL))
+	if file, header, err := r.FormFile("avatar"); err == nil {
+		defer file.Close()
+
+		ext := strings.ToLower(filepath.Ext(header.Filename))
 		allowedExts := map[string]bool{
 			".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 		}
@@ -256,6 +259,29 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			c.Json(w, http.StatusBadRequest, "Invalid file type for avatar", nil)
 			return
 		}
+
+		// Save to uploads/avatars/
+		uploadDir := "uploads/avatars"
+		os.MkdirAll(uploadDir, 0755)
+
+		newFileName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), header.Filename)
+		savePath := filepath.Join(uploadDir, newFileName)
+
+		dst, err := os.Create(savePath)
+		if err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to save avatar", nil)
+			return
+		}
+		defer dst.Close()
+
+		if _, err := io.Copy(dst, file); err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to write avatar to disk", nil)
+			return
+		}
+
+		profile.AvatarURL = &savePath // save relative path or URL
+	} else if input.AvatarURL != nil && *input.AvatarURL != "" {
+		// fallback to existing string URL if client passes it
 		profile.AvatarURL = input.AvatarURL
 	}
 

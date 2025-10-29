@@ -152,7 +152,8 @@ func (c *Construct) CreateCohortProgressEntity(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// GET Cohort Entities
+// Retrieve Progress Items
+
 func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Request) {
 	// --- Authenticate ---
 	user, err := c.GetAuthenticatedUser(r)
@@ -171,10 +172,24 @@ func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Req
 	// --- Role-based filtering ---
 	switch role {
 	case "opsadmin", "systemadmin":
-		// Can view everything — no filter applied
-	case "supervisor", "mentor":
-		// Can only view what they are assigned to
-		query = query.Where("assigned_to_id = ?", user.UserID)
+		// Full access — no restrictions
+
+	case "supervisor", "mentor", "student":
+		// Fetch cohorts the user is assigned to
+		// Capitalize first letter to match database format (Supervisor, Mentor, Student)
+		roleForQuery := strings.ToUpper(role[:1]) + strings.ToLower(role[1:])
+		cohortIDs := c.getAssignedCohorts(user.UserID, roleForQuery)
+
+		if len(cohortIDs) == 0 {
+			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{
+				"count": 0,
+				"data":  []interface{}{},
+			})
+			return
+		}
+
+		query = query.Where("entity_cohort_id IN ?", cohortIDs)
+
 	default:
 		c.Json(w, http.StatusForbidden, "You do not have permission to view progress entities", nil)
 		return
@@ -183,8 +198,13 @@ func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Req
 	// --- Optional: filter by cohort_id ---
 	if cohortIDStr := r.URL.Query().Get("cohort_id"); cohortIDStr != "" {
 		if cohortID, err := strconv.ParseUint(cohortIDStr, 10, 64); err == nil {
-			query = query.Where("cohort_id = ?", cohortID)
+			query = query.Where("entity_cohort_id = ?", cohortID)
 		}
+	}
+
+	// --- ✅ Optional: filter by entity_type ---
+	if entityType := r.URL.Query().Get("entity_type"); entityType != "" {
+		query = query.Where("LOWER(entity_type) = ?", strings.ToLower(entityType))
 	}
 
 	// --- Fetch entities ---
@@ -226,8 +246,9 @@ func (c *Construct) GetCohortProgressEntities(w http.ResponseWriter, r *http.Req
 	entity := "ProgressEntity"
 	action := fmt.Sprintf("Viewed %d cohort progress entities", len(entities))
 	_ = c.LogAudit(user.UserID, action, &entity, nil, nil, map[string]interface{}{
-		"role":  role,
-		"count": len(entities),
+		"role":        role,
+		"count":       len(entities),
+		"entity_type": r.URL.Query().Get("entity_type"),
 	})
 
 	c.Json(w, http.StatusOK, "Progress entities retrieved successfully", map[string]interface{}{

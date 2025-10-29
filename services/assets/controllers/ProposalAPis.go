@@ -387,10 +387,10 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 
 	// --- Base query ---
 	query := c.DB.Preload("Window").
-		Preload("Team").
-		Preload("Team.Users.Profile").
+		Preload("ProposalTeam").
+		Preload("ProposalTeam.Users.Profile").
 		Preload("SubmittedBy.Profile").
-		Preload("Cohort").
+		Preload("ProposalCohort").
 		Where("archived = ?", false).
 		Order("created_at DESC")
 

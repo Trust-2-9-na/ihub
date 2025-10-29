@@ -16,6 +16,13 @@ const (
 	Other    ResourceType = "Other"
 )
 
+type ResourceVisibility string
+
+const (
+	Public  ResourceVisibility = "Public"
+	Private ResourceVisibility = "Private"
+)
+
 type Resource struct {
 	ID          uint64 `gorm:"primaryKey;autoIncrement"`
 	Title       string `gorm:"type:varchar(200);not null"`
@@ -37,6 +44,11 @@ type Resource struct {
 	// ✅ Optional direct sharing with a user
 	SharedWithUserID *uint64 `gorm:"index" json:"shared_with_user_id,omitempty"` // FK → Users.UserID
 	SharedWithUser   *User   `gorm:"foreignKey:SharedWithUserID;references:UserID" json:"shared_with_user,omitempty"`
+
+	ResourceTeamID *uint64 `gorm:"index" json:"resource_team_id,omitempty"` // FK → Teams.TeamID
+	ResourceTeam   *Team   `gorm:"foreignKey:ResourceTeamID;references:TeamID" json:"resource_team,omitempty"`
+
+	Visibility ResourceVisibility `gorm:"size:20;default:'Public'" json:"visibility"`
 
 	IsArchived bool           `gorm:"default:false" json:"is_archived"`
 	CreatedAt  time.Time      `gorm:"autoCreateTime" json:"created_at"`

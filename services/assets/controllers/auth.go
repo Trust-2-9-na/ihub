@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 	"web/services/assets/models"
 	"web/services/utils"
 
@@ -49,12 +50,39 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 	var user models.User
 	err = c.DB.Preload("Profile").Preload("Role").Where("email = ?", email).First(&user).Error
 	if err == nil {
-		// ✅ User exists → login directly
-		token, err := utils.GenerateJWT(fmt.Sprint(user.UserID), user.Role.Name)
+		// ✅ User exists → create a new session and JWT
+		sessionUUID, _ := utils.GenerateRandomString(32)
+		session := models.Session{
+			SessionUUID:     sessionUUID,
+			SessionUserID:   user.UserID,
+			SessionUserUUID: user.UserUUID,
+			IsActive:        true,
+			ExpiresAt:       time.Now().Add(24 * time.Hour),
+			UserAgent:       r.UserAgent(),
+			IPAddress:       r.RemoteAddr,
+			LastActiveAt:    time.Now(),
+		}
+		if err := c.DB.Create(&session).Error; err != nil {
+			c.Json(w, http.StatusInternalServerError, "Failed to create session", nil)
+			return
+		}
+
+		token, err := utils.GenerateJWT(user.UserUUID, user.Role.Name, session.SessionUUID)
 		if err != nil {
 			c.Json(w, http.StatusInternalServerError, "Failed to generate JWT", nil)
 			return
 		}
+
+		// Set HttpOnly cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_id",
+			Value:    session.SessionUUID,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   24 * 3600,
+		})
 
 		c.Json(w, http.StatusOK, fmt.Sprintf("%s login successful via Google", roleName), map[string]interface{}{
 			"token": token,
@@ -65,6 +93,7 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 				"email":      user.Email,
 				"role":       user.Role.Name,
 			},
+			"session_id": session.SessionUUID,
 		})
 		return
 	} else if err != gorm.ErrRecordNotFound {
@@ -72,43 +101,21 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// ✅ User does not exist → create new user via signupUserWithRole
+	// ✅ User does not exist → create new user
 	var newUser *models.User
 	createRoleProfile := func(userID uint64) error {
-		// Create role-specific profile
 		switch strings.ToLower(roleName) {
 		case "student":
-			student := models.StudentProfile{
-				UserID:      userID,
-				School:      "",
-				Program:     "",
-				YearOfStudy: "",
-			}
-			return c.DB.Create(&student).Error
+			return c.DB.Create(&models.StudentProfile{UserID: userID}).Error
 		case "mentor":
-			mentor := models.MentorProfile{
-				UserID:       userID,
-				Department:   nil,
-				Organization: "",
-				Expertise:    "",
-				YearsExp:     0,
-			}
-			return c.DB.Create(&mentor).Error
+			return c.DB.Create(&models.MentorProfile{UserID: userID}).Error
 		case "supervisor":
-			supervisor := models.SupervisorProfile{
-				UserID:       userID,
-				Department:   nil,
-				Organization: "",
-				Expertise:    "",
-				YearsExp:     0,
-			}
-			return c.DB.Create(&supervisor).Error
+			return c.DB.Create(&models.SupervisorProfile{UserID: userID}).Error
 		default:
 			return fmt.Errorf("unknown role: %s", roleName)
 		}
 	}
 
-	// Wrap signup to capture the created user
 	c.signupUserWithRole(
 		w,
 		roleName,
@@ -117,12 +124,9 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 		email,
 		"", // no password for Google
 		func(userID uint64) error {
-			err := createRoleProfile(userID)
-			if err != nil {
+			if err := createRoleProfile(userID); err != nil {
 				return err
 			}
-
-			// Fetch the newly created user with profile and role
 			var u models.User
 			if err := c.DB.Preload("Profile").Preload("Role").First(&u, userID).Error; err != nil {
 				return err
@@ -138,14 +142,40 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// Generate JWT for new user
-	token, err := utils.GenerateJWT(fmt.Sprint(newUser.UserID), newUser.Role.Name)
+	// Create session for new user
+	sessionUUID, _ := utils.GenerateRandomString(32)
+	session := models.Session{
+		SessionUUID:     sessionUUID,
+		SessionUserID:   newUser.UserID,
+		SessionUserUUID: newUser.UserUUID,
+		IsActive:        true,
+		ExpiresAt:       time.Now().Add(24 * time.Hour),
+		UserAgent:       r.UserAgent(),
+		IPAddress:       r.RemoteAddr,
+		LastActiveAt:    time.Now(),
+	}
+	if err := c.DB.Create(&session).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to create session", nil)
+		return
+	}
+
+	token, err := utils.GenerateJWT(newUser.UserUUID, newUser.Role.Name, session.SessionUUID)
 	if err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to generate JWT", nil)
 		return
 	}
 
-	// Return JWT and user info
+	// Set HttpOnly cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    session.SessionUUID,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   24 * 3600,
+	})
+
 	c.Json(w, http.StatusOK, fmt.Sprintf("%s signup/login successful via Google", roleName), map[string]interface{}{
 		"token": token,
 		"user": map[string]interface{}{
@@ -155,5 +185,6 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 			"email":      newUser.Email,
 			"role":       newUser.Role.Name,
 		},
+		"session_id": session.SessionUUID,
 	})
 }
