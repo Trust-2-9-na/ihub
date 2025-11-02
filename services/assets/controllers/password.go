@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"web/services/assets/models"
 	"web/services/utils"
@@ -55,7 +56,7 @@ func (c *Construct) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	c.NotifyAndTrack(
 		authUser.UserID,
 		"Password Changed",
-		"You changed Your password",
+		"Your password has been changed successfully.",
 		"Update",
 		"User",
 		&authUser.UserID,
@@ -104,12 +105,14 @@ func (c *Construct) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- 5. Build email ---
-	resetLink := fmt.Sprintf("%s/reset-password?token=%s", os.Getenv("FRONTEND_URL"), token)
+	frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
+	resetLink := fmt.Sprintf("%s/reset-password?token=%s", frontendURL, token)
 	subject := "Password Reset Request"
 	body := fmt.Sprintf(`<p>Hello %s,</p>
-<p>You requested a password reset. Click the link below to reset your password:</p>
-<p><a href="%s">%s</a></p>
-<p>This link expires in 1 hour.</p>`, user.Username, resetLink, resetLink)
+<p>You have requested to reset your password. Please click the link below to proceed:</p>
+<p><a href="%s">Reset Password</a></p>
+<p>This link will expire in 1 hour for security purposes.</p>
+<p>If you did not request this password reset, please ignore this email and your password will remain unchanged.</p>`, user.Username, resetLink)
 
 	// --- 6. Send email asynchronously ---
 	go func() {
@@ -127,8 +130,6 @@ func (c *Construct) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		"token": token, // optional, useful for frontend testing
 	})
 }
-
-
 
 // ----------------- RESET PASSWORD -----------------
 // ----------------- RESET PASSWORD -----------------

@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -58,6 +60,22 @@ func (c *Construct) DownloadProposal(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	case "mentor":
+		if proposal.ProposalCohortID != nil {
+			// Get cohorts where mentor has student assignments
+			var cohortIDs []uint64
+			c.DB.Model(&models.MentorStudentAssignment{}).
+				Where("mentor_ref_id = ? AND deleted_at IS NULL", user.UserID).
+				Distinct("cohort_ref_id").
+				Pluck("cohort_ref_id", &cohortIDs)
+
+			for _, cid := range cohortIDs {
+				if cid == *proposal.ProposalCohortID {
+					canDownload = true
+					break
+				}
+			}
+		}
 	case "opsadmin", "systemadmin":
 		canDownload = true
 	}
@@ -75,8 +93,29 @@ func (c *Construct) DownloadProposal(w http.ResponseWriter, r *http.Request) {
 	// --- Track audit ---
 	c.LogAudit(user.UserID, "download", ptrString("proposal"), &proposal.ProposalID, nil, nil)
 
-	// --- Serve file ---
+	// --- Convert URL path to file system path ---
 	filePath := *proposal.DocumentURL
+	// Handle external URLs (http/https)
+	if strings.HasPrefix(filePath, "http://") || strings.HasPrefix(filePath, "https://") {
+		http.Redirect(w, r, filePath, http.StatusFound)
+		return
+	}
+	// Remove leading slash if present (stored as URL path)
+	if strings.HasPrefix(filePath, "/") {
+		filePath = filePath[1:]
+	}
+	// Convert forward slashes to OS-specific path separator
+	filePath = filepath.FromSlash(filePath)
+	// Clean the path
+	filePath = filepath.Clean(filePath)
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.Json(w, http.StatusNotFound, "File not found", map[string]interface{}{"error": "File does not exist", "path": filePath})
+		return
+	}
+
+	// --- Serve file ---
 	filename := filepath.Base(filePath)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -115,6 +154,19 @@ func (c *Construct) ListDownloadableProposals(w http.ResponseWriter, r *http.Req
 		query = query.Where("submitted_by_id = ?", user.UserID)
 	case "supervisor":
 		cohortIDs := c.getAssignedCohorts(user.UserID, "Supervisor")
+		if len(cohortIDs) == 0 {
+			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []interface{}{}})
+			return
+		}
+		query = query.Where("proposal_cohort_id IN ?", cohortIDs)
+	case "mentor":
+		// Get cohorts where mentor has student assignments
+		var cohortIDs []uint64
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("mentor_ref_id = ? AND deleted_at IS NULL", user.UserID).
+			Distinct("cohort_ref_id").
+			Pluck("cohort_ref_id", &cohortIDs)
+
 		if len(cohortIDs) == 0 {
 			c.Json(w, http.StatusOK, "No assigned cohorts found", map[string]interface{}{"data": []interface{}{}})
 			return
@@ -256,12 +308,176 @@ func (c *Construct) DownloadWeeklyReport(w http.ResponseWriter, r *http.Request)
 	// --- Track audit ---
 	c.LogAudit(user.UserID, "download", ptrString("weekly_report"), &report.ID, nil, nil)
 
+	// --- Convert URL path to file system path ---
+	filePath := *report.DocumentURL
+	// Remove leading slash if present (stored as URL path)
+	if strings.HasPrefix(filePath, "/") {
+		filePath = filePath[1:]
+	}
+	// Convert forward slashes to OS-specific path separator
+	filePath = filepath.FromSlash(filePath)
+	// Clean the path
+	filePath = filepath.Clean(filePath)
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.Json(w, http.StatusNotFound, "File not found", map[string]interface{}{"error": "File does not exist", "path": filePath})
+		return
+	}
+
 	// --- Serve file ---
-	filename := filepath.Base(*report.DocumentURL)
+	filename := filepath.Base(filePath)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	w.Header().Set("Content-Type", "application/octet-stream")
-	http.ServeFile(w, r, *report.DocumentURL)
+	http.ServeFile(w, r, filePath)
 
+}
+
+// GET /api/weekly-reports/export/{report_id}
+// Returns the weekly report (with items and comments) as a downloadable JSON file
+func (c *Construct) ExportWeeklyReportData(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	reportIDStr := vars["report_id"]
+	reportID, err := strconv.ParseUint(reportIDStr, 10, 64)
+	if err != nil {
+		c.Json(w, http.StatusBadRequest, "Invalid report ID", nil)
+		return
+	}
+
+	user, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	var report models.WeeklyReport
+	if err := c.DB.
+		Preload("Student.Profile").
+		Preload("ReviewedBy.Profile").
+		Preload("ReportCohortInfo").
+		Preload("ProgressItems").
+		Preload("ProgressItems.ProgressEntityRef").
+		Preload("Comments.EditedBy.Profile").
+		First(&report, reportID).Error; err != nil {
+		c.Json(w, http.StatusNotFound, "Weekly report not found", nil)
+		return
+	}
+
+	// Access control mirrors DownloadWeeklyReport
+	canDownload := false
+	role := strings.ToLower(user.Role.Name)
+	switch role {
+	case "student":
+		canDownload = (report.StudentID == user.UserID)
+	case "mentor":
+		var assignedStudentIDs []uint64
+		c.DB.Model(&models.MentorStudentAssignment{}).
+			Where("mentor_ref_id = ? AND deleted_at IS NULL", user.UserID).
+			Pluck("student_ref_id", &assignedStudentIDs)
+		for _, sid := range assignedStudentIDs {
+			if sid == report.StudentID {
+				canDownload = true
+				break
+			}
+		}
+	case "supervisor":
+		cohortIDs := c.getAssignedCohorts(user.UserID, "Supervisor")
+		for _, cid := range cohortIDs {
+			if report.ReportCohortID != nil && cid == *report.ReportCohortID {
+				canDownload = true
+				break
+			}
+		}
+	case "opsadmin", "systemadmin":
+		canDownload = true
+	default:
+		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
+		return
+	}
+	if !canDownload {
+		c.Json(w, http.StatusForbidden, "You do not have access to export this report", nil)
+		return
+	}
+
+	// Build a compact export payload
+	payload := map[string]interface{}{
+		"id":        report.ID,
+		"student":   map[string]interface{}{"id": report.StudentID, "name": report.Student.Profile.FullName()},
+		"cohort_id": report.ReportCohortID,
+		"cohort_name": func() string {
+			if report.ReportCohortInfo != nil {
+				return report.ReportCohortInfo.Name
+			}
+			return ""
+		}(),
+		"week_start":   report.WeekStart,
+		"week_end":     report.WeekEnd,
+		"status":       report.Status,
+		"work_done":    report.WorkDone,
+		"planned_work": report.PlannedWork,
+		"next_week":    report.NextWeek,
+		"challenges":   report.Challenges,
+		"document_url": report.DocumentURL,
+		"progress_items": func() []map[string]interface{} {
+			out := make([]map[string]interface{}, 0, len(report.ProgressItems))
+			for _, it := range report.ProgressItems {
+				entity := map[string]interface{}{}
+				if it.ProgressEntityRef != nil {
+					entity = map[string]interface{}{
+						"id":          it.ProgressEntityRef.ID,
+						"entity_name": it.ProgressEntityRef.EntityName,
+						"entity_type": it.ProgressEntityRef.EntityType,
+					}
+				}
+				out = append(out, map[string]interface{}{
+					"id":              it.ID,
+					"phase_name":      it.PhaseName,
+					"progress_type":   it.ProgressType,
+					"student_status":  it.StudentStatus,
+					"verified_status": it.VerifiedStatus,
+					"weight":          it.Weight,
+					"performance":     it.Performance,
+					"entity":          entity,
+				})
+			}
+			return out
+		}(),
+		"comments": func() []map[string]interface{} {
+			out := make([]map[string]interface{}, 0, len(report.Comments))
+			for _, cmt := range report.Comments {
+				commenter := map[string]interface{}{}
+				if cmt.EditedBy != nil && cmt.EditedBy.Profile.ProfileID != 0 {
+					commenter = map[string]interface{}{
+						"id":         cmt.EditedBy.UserID,
+						"username":   cmt.EditedBy.Username,
+						"first_name": cmt.EditedBy.Profile.FirstName,
+						"last_name":  cmt.EditedBy.Profile.LastName,
+						"email":      cmt.EditedBy.Email,
+					}
+				}
+				out = append(out, map[string]interface{}{
+					"id":         cmt.ID,
+					"comment":    cmt.Comment,
+					"edited_by":  commenter,
+					"created_at": cmt.CreatedAt,
+					"updated_at": cmt.UpdatedAt,
+				})
+			}
+			return out
+		}(),
+		"created_at": report.CreatedAt,
+		"updated_at": report.UpdatedAt,
+	}
+
+	// Audit trail
+	c.LogAudit(user.UserID, "export", ptrString("weekly_report"), &report.ID, nil, nil)
+
+	// Send as downloadable JSON
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=weekly_report_%d.json", report.ID))
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(payload)
 }
 
 // GET /api/weekly-reports/download

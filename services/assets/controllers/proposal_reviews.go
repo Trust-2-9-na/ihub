@@ -447,7 +447,7 @@ func (c *Construct) GetMyReviews(w http.ResponseWriter, r *http.Request) {
 		// SystemAdmin: can view all reviews
 	default:
 		// Students: only reviews on their submitted proposals
-		dbQuery = dbQuery.Joins("JOIN proposals p ON p.proposal_id = proposal_reviews.proposal_id").
+		dbQuery = dbQuery.Joins("JOIN proposals p ON p.proposal_id = proposal_reviews.related_proposal_id").
 			Where("p.submitted_by_id = ?", user.UserID)
 	}
 
@@ -579,7 +579,7 @@ func (c *Construct) UpdateReviewByProposal(w http.ResponseWriter, r *http.Reques
 	// --- Step 5: Load existing review or create new ---
 	var review models.ProposalReview
 	reviewFound := true
-	if err := c.DB.Where("proposal_id = ? AND reviewed_by_id = ?", proposalID, user.UserID).First(&review).Error; err != nil {
+	if err := c.DB.Where("related_proposal_id = ? AND reviewed_by_id = ?", proposalID, user.UserID).First(&review).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			review = models.ProposalReview{
 				RelatedProposalID: proposalID,

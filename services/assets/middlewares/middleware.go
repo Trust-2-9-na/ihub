@@ -6,72 +6,81 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
 	"web/services/assets/models"
 	"web/services/utils"
 
 	"gorm.io/gorm"
 )
 
-// Define a custom type for context keys
 type contextKey string
 
 const userUUIDKey contextKey = "user_uuid"
 const sessionUUIDKey contextKey = "session_uuid"
 
-// RoleAuthorizationWithSession validates JWT + session, checks roles & optional permissions
+// RoleAuthorization validates JWT + session (cookie or X-Session-ID), checks roles and optional permissions
 func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions ...string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 0) Authorization header
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				http.Error(w, "Missing Authorization Header", http.StatusUnauthorized)
 				return
 			}
-
 			tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
 
-			// 1️⃣ Validate JWT
+			// 1) Validate JWT
 			claims, err := utils.ValidateJWT(tokenString)
 			if err != nil {
 				http.Error(w, "Invalid token", http.StatusUnauthorized)
 				return
 			}
 
-			// 2️⃣ Fetch user from DB
+			// 2) Fetch user
 			var user models.User
 			if err := db.Preload("Role.Permissions").Where("user_uuid = ?", claims.UserUUID).First(&user).Error; err != nil {
 				http.Error(w, "User not found", http.StatusUnauthorized)
 				return
 			}
-
-			// Check if user is active
 			if !user.IsActive {
 				http.Error(w, "Account disabled", http.StatusForbidden)
 				return
 			}
 
-			// 3️⃣ Validate session cookie
-			cookie, err := r.Cookie("session_id")
-			if err != nil {
+			// 3) Resolve session id from cookie OR header
+			var sessionID string
+			if c, err := r.Cookie("session_id"); err == nil && c.Value != "" {
+				sessionID = c.Value
+			}
+			if sessionID == "" {
+				// Per-tab session propagation from frontend
+				sessionID = r.Header.Get("X-Session-ID")
+			}
+			if sessionID == "" {
 				http.Error(w, "Session not found", http.StatusUnauthorized)
 				return
 			}
 
+			// 4) Validate session
 			var session models.Session
-			if err := db.Where("session_uuid = ? AND is_active = ?", cookie.Value, true).First(&session).Error; err != nil {
+			if err := db.Where("session_uuid = ? AND is_active = ?", sessionID, true).First(&session).Error; err != nil {
 				http.Error(w, "Invalid session", http.StatusUnauthorized)
 				return
 			}
-
-			// Check session expiration
 			if time.Now().After(session.ExpiresAt) {
-				// Optionally deactivate expired session
 				db.Model(&session).Update("is_active", false)
 				http.Error(w, "Session expired", http.StatusUnauthorized)
 				return
 			}
 
-			// 4️⃣ Role check
+			// 5) Ensure session belongs to the JWT user
+			if session.SessionUserUUID != user.UserUUID {
+				http.Error(w, "Session does not match token user", http.StatusUnauthorized)
+				return
+			}
+
+			// 6) Role check
 			roleAllowed := false
 			for _, role := range allowedRoles {
 				if strings.EqualFold(user.Role.Name, role) {
@@ -85,7 +94,7 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 				return
 			}
 
-			// 5️⃣ Permission check (optional)
+			// 7) Permission check (optional)
 			if len(requiredPermissions) > 0 {
 				hasPermission := false
 				for _, perm := range user.Role.Permissions {
@@ -106,10 +115,10 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 				}
 			}
 
-			// 6️⃣ Optional: Update session last active timestamp for sliding expiration
+			// 8) Optional sliding expiration
 			db.Model(&session).Update("last_active_at", time.Now())
 
-			// 7️⃣ Store user & session info in context
+			// 9) Stash into context
 			ctx := context.WithValue(r.Context(), userUUIDKey, user.UserUUID)
 			ctx = context.WithValue(ctx, sessionUUIDKey, session.SessionUUID)
 
@@ -118,7 +127,6 @@ func RoleAuthorization(db *gorm.DB, allowedRoles []string, requiredPermissions .
 	}
 }
 
-// Helper functions to retrieve values from context
 func GetUserUUIDFromContext(ctx context.Context) (string, bool) {
 	uuid, ok := ctx.Value(userUUIDKey).(string)
 	return uuid, ok

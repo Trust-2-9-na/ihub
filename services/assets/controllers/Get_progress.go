@@ -8,8 +8,6 @@ import (
 	"time"
 	"web/services/assets/models"
 
-	"gorm.io/datatypes"
-
 	"gorm.io/gorm"
 )
 
@@ -24,6 +22,7 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 
 	// --- Query Parameters ---
 	entityID, _ := c.GetUintParam(r, "id")
+
 	var cohortID uint64
 	if cohortStr := r.URL.Query().Get("cohort_id"); cohortStr != "" {
 		fmt.Sscan(cohortStr, &cohortID)
@@ -41,6 +40,7 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 	offset := (page - 1) * limit
 
 	reportStatus := r.URL.Query().Get("report_status")
+
 	var weekStart, weekEnd time.Time
 	if ws := r.URL.Query().Get("week_start"); ws != "" {
 		weekStart, _ = time.Parse("2006-01-02", ws)
@@ -49,11 +49,16 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 		weekEnd, _ = time.Parse("2006-01-02", we)
 	}
 
+	// --- Check if archived items should be included ---
+	includeArchived := r.URL.Query().Get("include_archived") == "true"
+
 	// --- Base Query ---
 	query := c.DB.Model(&models.ProgressEntity{}).
 		Preload("EntityCohort").
 		Preload("Items.AssignedTo.Profile").
 		Preload("Items.CreatedBy.Profile").
+		Preload("Items.CreatedBy.Role").
+		Preload("Items.TeamDetails").
 		Preload("Items.WeeklyReports", func(db *gorm.DB) *gorm.DB {
 			if reportStatus != "" {
 				db = db.Where("status = ?", reportStatus)
@@ -67,29 +72,42 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 			return db.Preload("ProgressItems").Preload("Comments")
 		})
 
-	// --- Role-based Filtering ---
+	// --- Role-based Filtering (use entity_cohort_id) ---
 	switch role {
 	case "opsadmin", "systemadmin":
 		if entityID > 0 {
 			query = query.Where("id = ?", entityID)
 		} else if cohortID > 0 {
-			query = query.Where("cohort_id = ?", cohortID)
+			query = query.Where("entity_cohort_id = ?", cohortID)
 		}
+		// Filter individual items only (exclude team items and archived items)
+		preloadCondition := "team_ref_id IS NULL"
+		if !includeArchived {
+			preloadCondition += " AND is_archived = false"
+		}
+		query = query.Preload("Items", preloadCondition)
+
 	case "supervisor":
 		cohortIDs := c.getAssignedCohorts(currentUser.UserID, "Supervisor")
 		if len(cohortIDs) == 0 {
 			c.Json(w, http.StatusOK, "No cohorts found", map[string]interface{}{"entities": []interface{}{}})
 			return
 		}
-		query = query.Where("cohort_id IN ?", cohortIDs)
+		// Filter individual items only (exclude team items and archived items)
+		preloadCondition := "team_ref_id IS NULL"
+		if !includeArchived {
+			preloadCondition += " AND is_archived = false"
+		}
+		query = query.Where("entity_cohort_id IN ?", cohortIDs).
+			Preload("Items", preloadCondition)
+
 	case "mentor":
 		cohortIDs := c.getAssignedCohorts(currentUser.UserID, "Mentor")
 		if len(cohortIDs) == 0 {
 			c.Json(w, http.StatusOK, "No cohorts found", map[string]interface{}{"entities": []interface{}{}})
 			return
 		}
-
-		query = query.Where("cohort_id IN ?", cohortIDs)
+		query = query.Where("entity_cohort_id IN ?", cohortIDs)
 
 		// Filter only progress items for students assigned to this mentor
 		var studentIDs []uint64
@@ -102,8 +120,12 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		// Use these studentIDs to filter items
-		query = query.Preload("Items", "created_by_id IN ?", studentIDs)
+		// Filter individual items only (exclude team items and archived items)
+		preloadCondition := "created_by_id IN ? AND team_ref_id IS NULL"
+		if !includeArchived {
+			preloadCondition += " AND is_archived = false"
+		}
+		query = query.Preload("Items", preloadCondition, studentIDs)
 
 	case "student":
 		cohortIDs := c.getAssignedCohorts(currentUser.UserID, "Student")
@@ -111,8 +133,15 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 			c.Json(w, http.StatusOK, "No cohorts found", map[string]interface{}{"entities": []interface{}{}})
 			return
 		}
-		query = query.Where("cohort_id IN ?", cohortIDs).
-			Preload("Items", "created_by_id = ?", currentUser.UserID)
+
+		// Filter individual items only (exclude team items and archived items)
+		preloadCondition := "created_by_id = ? AND team_ref_id IS NULL"
+		if !includeArchived {
+			preloadCondition += " AND is_archived = false"
+		}
+		query = query.Where("entity_cohort_id IN ?", cohortIDs).
+			Preload("Items", preloadCondition, currentUser.UserID)
+
 	default:
 		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
 		return
@@ -139,9 +168,13 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 			"cohort_id":     e.EntityCohortID,
 		}
 
-		// --- Items ---
 		itemsResp := make([]map[string]interface{}, 0, len(e.Items))
 		for _, item := range e.Items {
+			// Skip team items - they should be fetched via GetTeamProgressEntities
+			if item.TeamRefID != nil {
+				continue
+			}
+
 			assignedTo := map[string]interface{}{}
 			if item.AssignedTo != nil {
 				assignedTo = map[string]interface{}{
@@ -152,45 +185,40 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 				}
 			}
 
-			createdBy := map[string]interface{}{}
+			// Submitted by (creator) - full name and role
+			submittedBy := map[string]interface{}{}
 			if item.CreatedBy != nil {
-				createdBy = map[string]interface{}{
+				fullName := ""
+				if item.CreatedBy.Profile.ProfileID != 0 {
+					fullName = fmt.Sprintf("%s %s",
+						strings.TrimSpace(item.CreatedBy.Profile.FirstName),
+						strings.TrimSpace(item.CreatedBy.Profile.LastName))
+					fullName = strings.TrimSpace(fullName)
+				}
+				if fullName == "" && item.CreatedBy.Username != "" {
+					fullName = item.CreatedBy.Username
+				}
+
+				roleName := ""
+				if item.CreatedBy.Role.RoleID != 0 {
+					roleName = item.CreatedBy.Role.Name
+				}
+
+				submittedBy = map[string]interface{}{
 					"id":         item.CreatedBy.UserID,
-					"first_name": item.CreatedBy.Profile.FirstName,
-					"last_name":  item.CreatedBy.Profile.LastName,
+					"full_name":  fullName,
+					"first_name": "",
+					"last_name":  "",
 					"email":      item.CreatedBy.Email,
+					"role":       roleName,
+				}
+				if item.CreatedBy.Profile.ProfileID != 0 {
+					submittedBy["first_name"] = item.CreatedBy.Profile.FirstName
+					submittedBy["last_name"] = item.CreatedBy.Profile.LastName
 				}
 			}
 
-			reportsResp := make([]map[string]interface{}, 0)
-			for _, r := range item.WeeklyReports {
-				linkedItemIDs := make([]uint64, 0)
-				for _, p := range r.ProgressItems {
-					linkedItemIDs = append(linkedItemIDs, p.ID)
-				}
-
-				status := r.Status
-				if status == "Pending" && len(r.Comments) > 0 {
-					for _, cmt := range r.Comments {
-						if strings.ToLower(cmt.Comment) == "needs revision" {
-							status = "Needs Revision"
-							break
-						}
-					}
-				}
-
-				reportsResp = append(reportsResp, map[string]interface{}{
-					"id":              r.ID,
-					"student_id":      r.StudentID,
-					"status":          status,
-					"week_start":      r.WeekStart,
-					"week_end":        r.WeekEnd,
-					"linked_items":    linkedItemIDs,
-					"student_status":  item.StudentStatus,
-					"verified_status": item.VerifiedStatus,
-				})
-			}
-
+			// Weekly reports collected above, but you asked not to return them yet
 			itemsResp = append(itemsResp, map[string]interface{}{
 				"id":              item.ID,
 				"phase_name":      item.PhaseName,
@@ -200,9 +228,12 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 				"performance":     item.Performance,
 				"progress_type":   item.ProgressType,
 				"is_archived":     item.IsArchived,
+				"is_team_task":    false, // This is an individual task
+				"team_ref_id":     nil,
 				"assigned_to":     assignedTo,
-				"created_by":      createdBy,
-				"weekly_reports":  reportsResp,
+				"submitted_by":    submittedBy, // Full name and role
+				"created_by":      submittedBy, // Keep for backward compatibility
+				// "weekly_reports": reportsResp, // omitted as requested
 			})
 		}
 
@@ -210,43 +241,6 @@ func (c *Construct) GetStudentProgressItems(w http.ResponseWriter, r *http.Reque
 		resp = append(resp, entityMap)
 	}
 
-	// --- AUDIT & LOG ACCESS ---
-	go func() {
-		ip := r.Header.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = r.RemoteAddr
-		}
-		ua := r.UserAgent()
-		meta := fmt.Sprintf(`{"ip":"%s","user_agent":"%s"}`, ip, ua)
-
-		message := fmt.Sprintf(
-			"%s (%s) viewed progress entities (page: %d, limit: %d, cohort_id: %d, entity_id: %d)",
-			currentUser.Username, role, page, limit, cohortID, entityID,
-		)
-
-		c.NotifyAndTrack(
-			currentUser.UserID,
-			"Progress Entities Viewed",
-			message,
-			"view",
-			"ProgressEntity",
-			nil,
-			"success",
-			false,
-		)
-
-		audit := &models.AuditLog{
-			UserID:    currentUser.UserID,
-			Action:    "view",
-			Entity:    ptrString("ProgressEntity"),
-			EntityID:  nil,
-			Metadata:  datatypes.JSON([]byte(meta)),
-			CreatedAt: time.Now(),
-		}
-		_ = c.DB.Create(audit).Error
-	}()
-
-	// --- Response ---
 	c.Json(w, http.StatusOK, "Fetched progress entities successfully", map[string]interface{}{
 		"page":     page,
 		"limit":    limit,
@@ -262,13 +256,23 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 		c.Json(w, http.StatusUnauthorized, fmt.Sprintf("%v", err), nil)
 		return
 	}
-
 	role := strings.ToLower(currentUser.Role.Name)
+
+	// Optional cohort filter (path or query)
 	cohortID, _ := c.GetUintParam(r, "cohort_id")
+	if cohortID == 0 {
+		if q := r.URL.Query().Get("cohort_id"); q != "" {
+			if v, err := strconv.ParseUint(q, 10, 64); err == nil {
+				cohortID = v
+			}
+		}
+	}
+
 	page, limit := c.GetPaginationParams(r)
 	offset := (page - 1) * limit
 
 	reportStatus := r.URL.Query().Get("report_status")
+	includeArchived := r.URL.Query().Get("include_archived") == "true" // Optional: include archived items
 	var weekStart, weekEnd time.Time
 	if ws := r.URL.Query().Get("week_start"); ws != "" {
 		weekStart, _ = time.Parse("2006-01-02", ws)
@@ -277,11 +281,12 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 		weekEnd, _ = time.Parse("2006-01-02", we)
 	}
 
-	// --- Base query ---
+	// Base query
 	query := c.DB.Model(&models.ProgressEntity{}).
 		Preload("EntityCohort").
-		Preload("Items.TeamDetails.UserTeams.UserRef.Profile"). // team members
+		Preload("Items.TeamDetails.UserTeams.UserRef.Profile").
 		Preload("Items.CreatedBy.Profile").
+		Preload("Items.CreatedBy.Role").
 		Preload("Items.WeeklyReports", func(db *gorm.DB) *gorm.DB {
 			if reportStatus != "" {
 				db = db.Where("status = ?", reportStatus)
@@ -292,16 +297,23 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 			if !weekEnd.IsZero() {
 				db = db.Where("week_end <= ?", weekEnd)
 			}
-			return db.Preload("ProgressItems").Preload("Comments")
+			return db.Preload("ProgressItems").Preload("Comments").Preload("Student.Profile")
 		}).
-		Joins("JOIN progress_items ON progress_items.entity_id = progress_entities.id").
+		// NOTE: correct join column
+		Joins("JOIN progress_items ON progress_items.progress_entity_ref_id = progress_entities.id").
 		Where("progress_items.team_ref_id IS NOT NULL")
 
-	// --- Role-based filtering ---
+	// Filter out archived items by default (unless explicitly requested)
+	if !includeArchived {
+		query = query.Where("progress_items.is_archived = ?", false)
+	}
+
+	// Role-based filtering
 	switch role {
 	case "opsadmin", "systemadmin":
 		if cohortID > 0 {
-			query = query.Where("progress_entities.cohort_id = ?", cohortID)
+			// NOTE: correct entity cohort column
+			query = query.Where("progress_entities.entity_cohort_id = ?", cohortID)
 		}
 
 	case "supervisor":
@@ -311,7 +323,9 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 
 	case "student":
 		var teamIDs []uint64
-		c.DB.Model(&models.UserTeam{}).Where("user_user_id = ?", currentUser.UserID).Pluck("team_team_id", &teamIDs)
+		c.DB.Model(&models.UserTeam{}).
+			Where("user_user_id = ?", currentUser.UserID).
+			Pluck("team_team_id", &teamIDs)
 		if len(teamIDs) == 0 {
 			c.Json(w, http.StatusOK, "No teams found", map[string]interface{}{
 				"count": 0, "page": page, "limit": limit, "total_pages": 0, "entities": []interface{}{},
@@ -329,23 +343,22 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// --- Count total ---
+	// Count
 	var total int64
 	if err := query.Distinct("progress_entities.id").Count(&total).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to count records", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	// --- Fetch entities ---
+	// Fetch
 	var entities []models.ProgressEntity
 	if err := query.Offset(offset).Limit(limit).Find(&entities).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch data", map[string]interface{}{"error": err.Error()})
 		return
 	}
-
 	totalPages := int((total + int64(limit) - 1) / int64(limit))
 
-	// --- Build response ---
+	// Build response
 	resp := make([]map[string]interface{}, 0, len(entities))
 	for _, e := range entities {
 		entityMap := map[string]interface{}{
@@ -363,6 +376,7 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 				continue
 			}
 			team := item.TeamDetails
+
 			members := make([]map[string]interface{}, 0, len(team.UserTeams))
 			for _, ut := range team.UserTeams {
 				u := ut.UserRef
@@ -375,49 +389,72 @@ func (c *Construct) GetTeamProgressEntities(w http.ResponseWriter, r *http.Reque
 				})
 			}
 
-			// --- Weekly reports ---
-			reportsResp := make([]map[string]interface{}, 0)
-			for _, r := range item.WeeklyReports {
-				linkedItemIDs := make([]uint64, 0)
-				for _, p := range r.ProgressItems {
-					linkedItemIDs = append(linkedItemIDs, p.ID)
+			// Submitted by (creator) - full name and role
+			submittedBy := map[string]interface{}{}
+			if item.CreatedBy != nil {
+				fullName := ""
+				if item.CreatedBy.Profile.ProfileID != 0 {
+					fullName = fmt.Sprintf("%s %s",
+						strings.TrimSpace(item.CreatedBy.Profile.FirstName),
+						strings.TrimSpace(item.CreatedBy.Profile.LastName))
+					fullName = strings.TrimSpace(fullName)
+				}
+				if fullName == "" && item.CreatedBy.Username != "" {
+					fullName = item.CreatedBy.Username
 				}
 
-				status := r.Status
-				if status == "Pending" && len(r.Comments) > 0 {
-					for _, cmt := range r.Comments {
-						if strings.ToLower(cmt.Comment) == "needs revision" {
-							status = "Needs Revision"
+				roleName := ""
+				if item.CreatedBy.Role.RoleID != 0 {
+					roleName = item.CreatedBy.Role.Name
+				}
+
+				// Also check team role if user is part of the team
+				roleInTeam := ""
+				if team.CreatedByID == item.CreatedBy.UserID {
+					roleInTeam = "TeamLeader"
+				} else {
+					for _, ut := range team.UserTeams {
+						if ut.UserRefID == item.CreatedBy.UserID && ut.Role != "" {
+							roleInTeam = ut.Role
 							break
 						}
 					}
 				}
 
-				reportsResp = append(reportsResp, map[string]interface{}{
-					"id":              r.ID,
-					"status":          status,
-					"week_start":      r.WeekStart,
-					"week_end":        r.WeekEnd,
-					"linked_items":    linkedItemIDs,
-					"verified_status": item.VerifiedStatus,
-				})
+				submittedBy = map[string]interface{}{
+					"id":         item.CreatedBy.UserID,
+					"full_name":  fullName,
+					"first_name": "",
+					"last_name":  "",
+					"email":      item.CreatedBy.Email,
+					"role":       roleName,   // User's system role (Student, Mentor, etc.)
+					"team_role":  roleInTeam, // Role within the team (TeamLeader, Member, etc.)
+				}
+				if item.CreatedBy.Profile.ProfileID != 0 {
+					submittedBy["first_name"] = item.CreatedBy.Profile.FirstName
+					submittedBy["last_name"] = item.CreatedBy.Profile.LastName
+				}
 			}
 
-			// --- Item response including all fields ---
 			itemsResp = append(itemsResp, map[string]interface{}{
 				"id":              item.ID,
 				"phase_name":      item.PhaseName,
+				"progress_type":   item.ProgressType,
 				"team_id":         team.TeamID,
 				"team_name":       team.Name,
+				"team_ref_id":     item.TeamRefID,
+				"is_team_task":    true, // This is a team task
 				"member_count":    len(team.UserTeams),
 				"members":         members,
+				"submitted_by":    submittedBy, // Full name and role
+				"created_by":      submittedBy, // Keep for backward compatibility
 				"weight":          item.Weight,
 				"performance":     item.Performance,
 				"student_status":  item.StudentStatus,
 				"verified_status": item.VerifiedStatus,
-				"weekly_reports":  reportsResp,
+				"is_archived":     item.IsArchived,
+				// weekly_reports intentionally omitted or include if needed
 			})
-
 		}
 
 		entityMap["items"] = itemsResp

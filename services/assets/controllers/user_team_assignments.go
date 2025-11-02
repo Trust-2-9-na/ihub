@@ -2,9 +2,13 @@ package controllers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+	"web/services/assets/middlewares"
 	"web/services/assets/models"
 
 	"gorm.io/gorm"
@@ -62,7 +66,8 @@ func (c *Construct) AssignStudentsToMentor(w http.ResponseWriter, r *http.Reques
 		if err == nil {
 			skipped = append(skipped, studentID)
 			continue
-		} else if err != nil && err != gorm.ErrRecordNotFound {
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			tx.Rollback()
 			c.Json(w, http.StatusInternalServerError, "Failed to check existing assignment", map[string]interface{}{"error": err.Error()})
 			return
@@ -208,5 +213,295 @@ func (c *Construct) AssignSupervisorsToTeam(w http.ResponseWriter, r *http.Reque
 		"team_name":            team.Name,
 		"cohort_id":            body.CohortID,
 		"assigned_supervisors": assignedSupervisors,
+	})
+}
+
+//============================"""""""""======================="""""""""======================
+//                      Get Students Assigned to Mentors
+//============================"""""""""======================="""""""""======================
+
+func (c *Construct) GetMentorStudentAssignments(w http.ResponseWriter, r *http.Request) {
+	// Authenticate user
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	var user models.User
+	if err := c.DB.Preload("Role").Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
+	// Check if role is loaded (RoleID will be 0 if not loaded)
+	if user.RoleID == 0 || user.Role.Name == "" {
+		c.Json(w, http.StatusUnauthorized, "User role not found", nil)
+		return
+	}
+
+	roleName := strings.ToLower(strings.TrimSpace(user.Role.Name))
+
+	// Get optional query parameters
+	cohortIDStr := r.URL.Query().Get("cohort_id")
+	mentorIDStr := r.URL.Query().Get("mentor_id")
+
+	var cohortID, mentorID uint64
+	if cohortIDStr != "" {
+		if id, err := strconv.ParseUint(cohortIDStr, 10, 64); err == nil {
+			cohortID = id
+		}
+	}
+	if mentorIDStr != "" {
+		if id, err := strconv.ParseUint(mentorIDStr, 10, 64); err == nil {
+			mentorID = id
+		}
+	}
+
+	// Query structure to get mentor-student assignments
+	var assignments []struct {
+		AssignmentID  uint64
+		CohortID      uint64
+		CohortName    string
+		MentorID      uint64
+		MentorName    string
+		MentorEmail   string
+		StudentID     uint64
+		StudentName   string
+		StudentEmail  string
+		CreatedByID   uint64
+		CreatedByName string
+		CreatedAt     time.Time
+	}
+
+	query := c.DB.Table("mentor_student_assignments as msa").
+		Select(`
+			msa.id as assignment_id,
+			c.cohort_id,
+			c.name as cohort_name,
+			mentor.user_id as mentor_id,
+			COALESCE(CONCAT(mp.first_name, ' ', mp.last_name), mentor.username) as mentor_name,
+			mentor.email as mentor_email,
+			student.user_id as student_id,
+			COALESCE(CONCAT(sp.first_name, ' ', sp.last_name), student.username) as student_name,
+			student.email as student_email,
+			assigner.user_id as created_by_id,
+			COALESCE(CONCAT(ap.first_name, ' ', ap.last_name), assigner.username) as created_by_name,
+			msa.created_at as created_at
+		`).
+		Joins("JOIN cohorts c ON c.cohort_id = msa.cohort_ref_id").
+		Joins("JOIN users mentor ON mentor.user_id = msa.mentor_ref_id").
+		Joins("LEFT JOIN user_profiles mp ON mp.user_id = mentor.user_id").
+		Joins("JOIN users student ON student.user_id = msa.student_ref_id").
+		Joins("LEFT JOIN user_profiles sp ON sp.user_id = student.user_id").
+		Joins("LEFT JOIN users assigner ON assigner.user_id = msa.created_by").
+		Joins("LEFT JOIN user_profiles ap ON ap.user_id = assigner.user_id").
+		Where("msa.deleted_at IS NULL")
+
+	// Apply filters
+	if cohortID > 0 {
+		query = query.Where("msa.cohort_ref_id = ?", cohortID)
+	}
+	if mentorID > 0 {
+		query = query.Where("msa.mentor_ref_id = ?", mentorID)
+	}
+
+	// Role-based visibility
+	switch roleName {
+	case "mentor":
+		// Mentor sees only their own assignments
+		query = query.Where("msa.mentor_ref_id = ?", user.UserID)
+
+	case "supervisor":
+		// Supervisor sees assignments in cohorts they supervise
+		query = query.Where("c.cohort_id IN (?)",
+			c.DB.Table("cohort_users").Select("cohort_cohort_id").
+				Where("user_user_id = ? AND role = ?", user.UserID, "Supervisor"),
+		)
+
+	case "student":
+		// Student sees only their own assignments
+		query = query.Where("msa.student_ref_id = ?", user.UserID)
+
+	case "opsadmin", "systemadmin":
+		// Full visibility - no additional filter needed
+	default:
+		// Log the actual role name for debugging
+		errorMsg := fmt.Sprintf("Access denied: role '%s' is not authorized for this action", user.Role.Name)
+		c.Json(w, http.StatusForbidden, errorMsg, nil)
+		return
+	}
+
+	// Execute query
+	if err := query.Order("msa.created_at DESC").Scan(&assignments).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch mentor-student assignments", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Helper for formatting names
+	formatName := func(name string) string {
+		name = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(name, "_", " ")))
+		words := strings.Fields(name)
+		for i, w := range words {
+			if len(w) > 0 {
+				words[i] = strings.ToUpper(string(w[0])) + strings.ToLower(w[1:])
+			}
+		}
+		return strings.Join(words, " ")
+	}
+
+	// Fetch proposals for all students in their respective cohorts
+	type ProposalInfo struct {
+		ProposalID    uint64
+		Title         string
+		Category      string
+		Status        string
+		SubmittedByID uint64
+		CohortID      *uint64
+	}
+
+	// Get unique student-cohort pairs
+	studentCohortPairs := make(map[string]bool)
+	for _, a := range assignments {
+		key := fmt.Sprintf("%d-%d", a.StudentID, a.CohortID)
+		studentCohortPairs[key] = true
+	}
+
+	// Query proposals for these student-cohort pairs
+	var proposals []ProposalInfo
+	if len(studentCohortPairs) > 0 {
+		var studentIDs []uint64
+		var cohortIDs []uint64
+		for _, a := range assignments {
+			studentIDs = append(studentIDs, a.StudentID)
+			cohortIDs = append(cohortIDs, a.CohortID)
+		}
+
+		// Remove duplicates
+		uniqueStudentIDs := make(map[uint64]bool)
+		uniqueCohortIDs := make(map[uint64]bool)
+		for _, id := range studentIDs {
+			uniqueStudentIDs[id] = true
+		}
+		for _, id := range cohortIDs {
+			uniqueCohortIDs[id] = true
+		}
+
+		var studentIDList []uint64
+		var cohortIDList []uint64
+		for id := range uniqueStudentIDs {
+			studentIDList = append(studentIDList, id)
+		}
+		for id := range uniqueCohortIDs {
+			cohortIDList = append(cohortIDList, id)
+		}
+
+		c.DB.Table("proposals").
+			Select("proposals.proposal_id, proposals.title, proposals.category, proposals.status, proposals.submitted_by_id, proposals.proposal_cohort_id as cohort_id").
+			Where("proposals.submitted_by_id IN ? AND proposals.proposal_cohort_id IN ? AND proposals.deleted_at IS NULL", studentIDList, cohortIDList).
+			Order("proposals.created_at DESC").
+			Scan(&proposals)
+	}
+
+	// Group proposals by student-cohort combination
+	proposalsByStudentCohort := make(map[string][]ProposalInfo)
+	for _, p := range proposals {
+		if p.CohortID != nil {
+			key := fmt.Sprintf("%d-%d", p.SubmittedByID, *p.CohortID)
+			proposalsByStudentCohort[key] = append(proposalsByStudentCohort[key], p)
+		}
+	}
+
+	// Group assignments by mentor
+	mentorMap := make(map[uint64]map[string]interface{})
+	studentKeys := make(map[string]bool) // Track unique student-cohort pairs to avoid duplicates
+
+	for _, a := range assignments {
+		mentorKey := a.MentorID
+		cohortKey := fmt.Sprintf("%d", a.CohortID)
+		studentCohortKey := fmt.Sprintf("%d-%d", a.StudentID, a.CohortID)
+
+		// Initialize mentor entry if not exists
+		if mentorMap[mentorKey] == nil {
+			mentorMap[mentorKey] = make(map[string]interface{})
+			mentorMap[mentorKey]["mentor"] = map[string]interface{}{
+				"id":    a.MentorID,
+				"name":  formatName(a.MentorName),
+				"email": a.MentorEmail,
+			}
+			mentorMap[mentorKey]["cohorts"] = make(map[string]interface{})
+		}
+
+		cohorts := mentorMap[mentorKey]["cohorts"].(map[string]interface{})
+
+		// Initialize cohort entry if not exists
+		if cohorts[cohortKey] == nil {
+			cohorts[cohortKey] = map[string]interface{}{
+				"cohort_id":   a.CohortID,
+				"cohort_name": a.CohortName,
+				"students":    []map[string]interface{}{},
+			}
+		}
+
+		cohort := cohorts[cohortKey].(map[string]interface{})
+		students := cohort["students"].([]map[string]interface{})
+
+		// Skip if we've already added this student-cohort combination
+		if !studentKeys[studentCohortKey] {
+			// Add student to list
+			studentInfo := map[string]interface{}{
+				"id":          a.StudentID,
+				"name":        formatName(a.StudentName),
+				"email":       a.StudentEmail,
+				"assigned_at": a.CreatedAt,
+				"proposals":   []map[string]interface{}{},
+			}
+
+			// Add assigned_by info for admins/supervisors/mentors
+			if roleName != "student" {
+				studentInfo["assigned_by"] = map[string]interface{}{
+					"id":   a.CreatedByID,
+					"name": formatName(a.CreatedByName),
+				}
+			}
+
+			// Add proposals for this student in this cohort
+			if studentProposals, exists := proposalsByStudentCohort[studentCohortKey]; exists {
+				proposalsList := make([]map[string]interface{}, 0, len(studentProposals))
+				for _, p := range studentProposals {
+					proposalsList = append(proposalsList, map[string]interface{}{
+						"proposal_id": p.ProposalID,
+						"title":       p.Title,
+						"category":    p.Category,
+						"status":      p.Status,
+					})
+				}
+				studentInfo["proposals"] = proposalsList
+			}
+
+			students = append(students, studentInfo)
+			studentKeys[studentCohortKey] = true
+			cohort["students"] = students
+			cohorts[cohortKey] = cohort
+			mentorMap[mentorKey]["cohorts"] = cohorts
+		}
+	}
+
+	// Convert map to list
+	result := make([]map[string]interface{}, 0, len(mentorMap))
+	for _, mentorData := range mentorMap {
+		// Convert cohorts map to list
+		cohortsMap := mentorData["cohorts"].(map[string]interface{})
+		cohortsList := make([]map[string]interface{}, 0, len(cohortsMap))
+		for _, cohortData := range cohortsMap {
+			cohortsList = append(cohortsList, cohortData.(map[string]interface{}))
+		}
+		mentorData["cohorts"] = cohortsList
+		result = append(result, mentorData)
+	}
+
+	c.Json(w, http.StatusOK, "Mentor-student assignments fetched successfully", map[string]interface{}{
+		"assignments": result,
+		"count":       len(result),
 	})
 }

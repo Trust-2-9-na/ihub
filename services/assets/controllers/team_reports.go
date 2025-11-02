@@ -35,6 +35,13 @@ func (c *Construct) CreateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 	var input inputStruct
 	var documentURL *string
 
+	// --- Authenticate user FIRST (before processing file upload) ---
+	user, err := c.GetAuthenticatedUser(r)
+	if err != nil {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
 	// --- Parse request body ---
 	contentType := r.Header.Get("Content-Type")
 
@@ -97,7 +104,8 @@ func (c *Construct) CreateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 
 			buff := make([]byte, 512)
 			if _, err := file.Read(buff); err != nil {
-				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", nil)
+				log.Printf("[ERROR] Failed to read uploaded file header: %v\n", err)
+				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", map[string]interface{}{"error": err.Error()})
 				return
 			}
 			file.Seek(0, io.SeekStart)
@@ -108,34 +116,67 @@ func (c *Construct) CreateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 				return
 			}
 
+			// Create upload directory with proper error handling
 			dateDir := time.Now().Format("20060102")
 			uploadDir := filepath.Join("uploads", "reports", dateDir)
-			os.MkdirAll(uploadDir, os.ModePerm)
+			// Clean the path to handle Windows path issues
+			uploadDir = filepath.Clean(uploadDir)
 
-			filename := fmt.Sprintf("report_%d_%d%s", r.Context().Value("user_id"), time.Now().Unix(), ext)
+			// Ensure parent directories exist with proper permissions (0755)
+			if err := os.MkdirAll(uploadDir, 0755); err != nil {
+				log.Printf("[ERROR] Failed to create upload directory '%s': %v\n", uploadDir, err)
+				c.Json(w, http.StatusInternalServerError, "Failed to create upload directory", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Verify directory was created and is writable
+			dirInfo, err := os.Stat(uploadDir)
+			if err != nil {
+				log.Printf("[ERROR] Upload directory does not exist after creation: '%s': %v\n", uploadDir, err)
+				c.Json(w, http.StatusInternalServerError, "Failed to create upload directory", map[string]interface{}{"error": "Directory creation failed"})
+				return
+			}
+			if !dirInfo.IsDir() {
+				log.Printf("[ERROR] Upload path exists but is not a directory: '%s'\n", uploadDir)
+				c.Json(w, http.StatusInternalServerError, "Failed to create upload directory", map[string]interface{}{"error": "Path exists but is not a directory"})
+				return
+			}
+
+			// Generate filename using authenticated user's ID
+			filename := fmt.Sprintf("report_%d_%d%s", user.UserID, time.Now().Unix(), ext)
 			filePath := filepath.Join(uploadDir, filename)
+			filePath = filepath.Clean(filePath)
 
+			// Create file with proper error handling
 			dest, err := os.Create(filePath)
 			if err != nil {
-				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", nil)
+				log.Printf("[ERROR] Failed to create file '%s': %v\n", filePath, err)
+				log.Printf("[ERROR] Working directory: %s\n", func() string {
+					wd, _ := os.Getwd()
+					return wd
+				}())
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
 				return
 			}
 			defer dest.Close()
-			io.Copy(dest, file)
 
-			url := fmt.Sprintf("/%s", filePath)
+			// Copy file content with error handling
+			if _, err := io.Copy(dest, file); err != nil {
+				log.Printf("[ERROR] Failed to write file content to '%s': %v\n", filePath, err)
+				// Clean up the file if write failed
+				os.Remove(filePath)
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Use forward slashes for URL (works on all platforms)
+			url := fmt.Sprintf("/%s", filepath.ToSlash(filePath))
 			documentURL = &url
+			log.Printf("[INFO] Successfully saved uploaded file: %s\n", filePath)
 		}
 
 	default:
 		c.Json(w, http.StatusBadRequest, "Unsupported Content-Type. Use application/json or multipart/form-data.", nil)
-		return
-	}
-
-	// --- Authenticate user ---
-	user, err := c.GetAuthenticatedUser(r)
-	if err != nil {
-		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
 		return
 	}
 
@@ -210,8 +251,8 @@ func (c *Construct) CreateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 
 	// --- Notify supervisors ---
 	var supervisors []models.User
-	c.DB.Joins("JOIN cohort_supervisors cs ON cs.supervisor_id = users.user_id").
-		Where("cs.cohort_id = ?", input.CohortID).
+	c.DB.Joins("JOIN cohort_users cs ON cs.user_user_id = users.user_id").
+		Where("cs.cohort_cohort_id = ? AND cs.role = ? AND cs.deleted_at IS NULL", input.CohortID, "Supervisor").
 		Find(&supervisors)
 
 	for _, sup := range supervisors {
@@ -441,8 +482,8 @@ func (c *Construct) UpdateTeamWeeklyReport(w http.ResponseWriter, r *http.Reques
 
 	// --- Notify supervisors ---
 	var supervisors []models.User
-	c.DB.Joins("JOIN cohort_supervisors cs ON cs.supervisor_id = users.user_id").
-		Where("cs.cohort_id = ?", report.ReportCohortID).
+	c.DB.Joins("JOIN cohort_users cs ON cs.user_user_id = users.user_id").
+		Where("cs.cohort_cohort_id = ? AND cs.role = ? AND cs.deleted_at IS NULL", report.ReportCohortID, "Supervisor").
 		Find(&supervisors)
 
 	for _, sup := range supervisors {
@@ -550,7 +591,8 @@ func (c *Construct) GetWeeklyReportsByTeam(w http.ResponseWriter, r *http.Reques
 	}
 	offset := (page - 1) * limit
 
-	reportStatus := r.URL.Query().Get("status") // filter by status
+	reportStatus := r.URL.Query().Get("status")                        // filter by status
+	includeArchived := r.URL.Query().Get("include_archived") == "true" // Optional: include archived reports
 	var weekStart, weekEnd time.Time
 	if ws := r.URL.Query().Get("week_start"); ws != "" { //filter by week start
 		weekStart, _ = time.Parse("2006-01-02", ws)
@@ -565,13 +607,24 @@ func (c *Construct) GetWeeklyReportsByTeam(w http.ResponseWriter, r *http.Reques
 		Preload("Student.Role").
 		Preload("ReviewedBy.Profile").
 		Preload("ReportCohortInfo").
-		Preload("ProgressItems.Entity").
+		Preload("TeamInfo").
+		Preload("TeamInfo.UserTeams.UserRef.Profile").
+		Preload("ProgressItems.ProgressEntityRef").
+		Preload("ProgressItems.CreatedBy.Profile").
 		Preload("Comments.EditedBy.Profile").
+		// Only return team reports (has team_id)
+		Where("team_info_id IS NOT NULL").
 		Order("created_at DESC")
+
+	// Filter out archived reports by default (unless explicitly requested)
+	if !includeArchived {
+		query = query.Where("is_archived = ?", false)
+	}
 
 	role := strings.ToLower(user.Role.Name)
 	switch role {
 	case "student":
+		// Students see only their own team reports
 		query = query.Where("student_id = ?", user.UserID)
 
 	case "mentor":
@@ -605,16 +658,8 @@ func (c *Construct) GetWeeklyReportsByTeam(w http.ResponseWriter, r *http.Reques
 			return
 		}
 
-		// Get all students in these teams
-		var supervisedStudentIDs []uint64
-		c.DB.Model(&models.UserTeam{}).Where("team_team_id IN ?", supervisedTeamIDs).Pluck("user_user_id", &supervisedStudentIDs)
-
-		if len(supervisedStudentIDs) == 0 {
-			c.Json(w, http.StatusOK, "No students found in supervised teams", map[string]interface{}{"data": []interface{}{}})
-			return
-		}
-
-		query = query.Where("student_id IN ?", supervisedStudentIDs)
+		// Filter directly by team_id for more efficient querying
+		query = query.Where("team_info_id IN ?", supervisedTeamIDs)
 
 	default:
 		c.Json(w, http.StatusForbidden, "Unauthorized role", nil)
@@ -662,7 +707,7 @@ func (c *Construct) GetWeeklyReportsByTeam(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// response builder
+// response builder for team reports
 func buildWeeklyReportResponse(reports []models.WeeklyReport) []map[string]interface{} {
 	resp := make([]map[string]interface{}, 0, len(reports))
 
@@ -670,6 +715,15 @@ func buildWeeklyReportResponse(reports []models.WeeklyReport) []map[string]inter
 		// Build progress items response
 		itemsResp := make([]map[string]interface{}, 0, len(report.ProgressItems))
 		for _, item := range report.ProgressItems {
+			entityData := map[string]interface{}{}
+			if item.ProgressEntityRef != nil && item.ProgressEntityRef.ID != 0 {
+				entityData = map[string]interface{}{
+					"id":          item.ProgressEntityRefID,
+					"entity_name": item.ProgressEntityRef.EntityName,
+					"entity_type": item.ProgressEntityRef.EntityType,
+				}
+			}
+
 			itemsResp = append(itemsResp, map[string]interface{}{
 				"id":              item.ID,
 				"phase_name":      item.PhaseName,
@@ -678,11 +732,7 @@ func buildWeeklyReportResponse(reports []models.WeeklyReport) []map[string]inter
 				"weight":          item.Weight,
 				"performance":     item.Performance,
 				"progress_type":   item.ProgressType,
-				"entity": map[string]interface{}{
-					"id":          item.ProgressEntityRefID,
-					"entity_name": item.ProgressEntityRef.EntityName,
-					"entity_type": item.ProgressEntityRef.EntityType,
-				},
+				"entity":          entityData,
 			})
 		}
 
@@ -708,38 +758,109 @@ func buildWeeklyReportResponse(reports []models.WeeklyReport) []map[string]inter
 			})
 		}
 
-		// Append final report map
-		resp = append(resp, map[string]interface{}{
-			"id":             report.ID,
-			"student_id":     report.StudentID,
-			"student_name":   report.Student.Profile.FullName(),
-			"cohort_id":      report.ReportCohortID,
-			"cohort_name":    report.ReportCohortInfo.Name,
-			"week_start":     report.WeekStart,
-			"week_end":       report.WeekEnd,
-			"status":         report.Status,
-			"document_url":   report.DocumentURL,
-			"work_done":      report.WorkDone,
-			"planned_work":   report.PlannedWork,
-			"next_week":      report.NextWeek,
-			"challenges":     report.Challenges,
-			"progress_items": itemsResp,
-			"comments":       commentsResp,
-			"reviewed_by": func() map[string]interface{} {
-				if report.ReviewedBy != nil && report.ReviewedBy.Profile.ProfileID != 0 {
-					return map[string]interface{}{
-						"id":         report.ReviewedBy.UserID,
-						"username":   report.ReviewedBy.Username,
-						"first_name": report.ReviewedBy.Profile.FirstName,
-						"last_name":  report.ReviewedBy.Profile.LastName,
-						"email":      report.ReviewedBy.Email,
+		// Build team information
+		teamData := map[string]interface{}{}
+		if report.TeamInfo != nil && report.TeamInfo.TeamID != 0 {
+			// Build team members list
+			members := make([]map[string]interface{}, 0)
+			if len(report.TeamInfo.UserTeams) > 0 {
+				for _, ut := range report.TeamInfo.UserTeams {
+					if ut.UserRef.UserID != 0 && ut.UserRef.Profile.ProfileID != 0 {
+						memberData := map[string]interface{}{
+							"user_id":    ut.UserRef.UserID,
+							"username":   ut.UserRef.Username,
+							"first_name": ut.UserRef.Profile.FirstName,
+							"last_name":  ut.UserRef.Profile.LastName,
+							"email":      ut.UserRef.Email,
+							"role":       ut.Role,
+						}
+						members = append(members, memberData)
 					}
 				}
-				return nil
-			}(),
-			"created_at": report.CreatedAt,
-			"updated_at": report.UpdatedAt,
-		})
+			}
+
+			teamData = map[string]interface{}{
+				"team_id":    report.TeamInfo.TeamID,
+				"name":       report.TeamInfo.Name,
+				"members":    members,
+				"created_at": report.TeamInfo.CreatedAt,
+			}
+		}
+
+		// Build student information
+		studentData := map[string]interface{}{
+			"student_id": report.StudentID,
+		}
+		if report.Student.Profile.ProfileID != 0 {
+			studentData["student_name"] = report.Student.Profile.FullName()
+			studentData["first_name"] = report.Student.Profile.FirstName
+			studentData["last_name"] = report.Student.Profile.LastName
+			studentData["email"] = report.Student.Email
+		}
+
+		// Build reviewed_by information
+		reviewedByData := map[string]interface{}{}
+		if report.ReviewedBy != nil && report.ReviewedBy.Profile.ProfileID != 0 {
+			reviewedByData = map[string]interface{}{
+				"id":         report.ReviewedBy.UserID,
+				"username":   report.ReviewedBy.Username,
+				"first_name": report.ReviewedBy.Profile.FirstName,
+				"last_name":  report.ReviewedBy.Profile.LastName,
+				"email":      report.ReviewedBy.Email,
+			}
+		}
+
+		// Build cohort information
+		cohortData := map[string]interface{}{}
+		if report.ReportCohortInfo != nil && report.ReportCohortInfo.CohortID != 0 {
+			cohortData = map[string]interface{}{
+				"cohort_id":   report.ReportCohortInfo.CohortID,
+				"cohort_name": report.ReportCohortInfo.Name,
+			}
+		}
+
+		// Append final report map with all required fields matching database schema
+		reportData := map[string]interface{}{
+			"id":                    report.ID,
+			"report_cohort_id":      report.ReportCohortID,
+			"student_id":            report.StudentID,
+			"team_info_id":          report.TeamInfoID,         // Primary field from database
+			"team_leader_report_id": report.TeamLeaderReportID, // From database schema
+			"is_archived":           report.IsArchived,         // From database schema
+			"week_start":            report.WeekStart,
+			"week_end":              report.WeekEnd,
+			"work_done":             report.WorkDone,
+			"planned_work":          report.PlannedWork,
+			"next_week":             report.NextWeek,
+			"challenges":            report.Challenges,
+			"status":                report.Status,
+			"reviewed_by_id":        report.ReviewedByID,
+			"document_url":          report.DocumentURL,
+			"student":               studentData,
+			"cohort":                cohortData,
+			"team":                  teamData, // Full team information object
+			"progress_items":        itemsResp,
+			"comments":              commentsResp,
+			"reviewed_by":           reviewedByData,
+			"created_at":            report.CreatedAt,
+			"updated_at":            report.UpdatedAt,
+		}
+
+		// Add team_id as alias for frontend compatibility (since model JSON tag uses "team_id")
+		if report.TeamInfoID != nil {
+			reportData["team_id"] = report.TeamInfoID
+		}
+
+		// For backward compatibility, also include flat fields
+		if report.Student.Profile.ProfileID != 0 {
+			reportData["student_name"] = report.Student.Profile.FullName()
+		}
+		if report.ReportCohortInfo != nil {
+			reportData["cohort_id"] = report.ReportCohortID
+			reportData["cohort_name"] = report.ReportCohortInfo.Name
+		}
+
+		resp = append(resp, reportData)
 	}
 
 	return resp
@@ -972,12 +1093,27 @@ func (c *Construct) ManageTeamReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var updatedReports []models.WeeklyReport
+	var processedReportIDs []uint64
+
 	for _, report := range reports {
 		switch input.Action {
 		case "archive":
 			report.IsArchived = true
 			report.UpdatedAt = time.Now()
-			c.DB.Save(&report)
+			if err := c.DB.Save(&report).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to archive report #%d", report.ID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Reload report to get latest state
+			var updatedReport models.WeeklyReport
+			if err := c.DB.Preload("Student.Profile").Preload("ReviewedBy.Profile").Preload("ReportCohortInfo").Preload("TeamInfo").
+				Where("id = ?", report.ID).First(&updatedReport).Error; err == nil {
+				updatedReports = append(updatedReports, updatedReport)
+				processedReportIDs = append(processedReportIDs, report.ID)
+			}
+
 			c.NotifyAndTrack(user.UserID, "Weekly Report Archived",
 				fmt.Sprintf("Weekly report ID %d was archived", report.ID),
 				"Archive", "WeeklyReport", &report.ID, report.Status, true,
@@ -986,17 +1122,51 @@ func (c *Construct) ManageTeamReports(w http.ResponseWriter, r *http.Request) {
 		case "unarchive":
 			report.IsArchived = false
 			report.UpdatedAt = time.Now()
-			c.DB.Save(&report)
+			if err := c.DB.Save(&report).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to unarchive report #%d", report.ID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Reload report to get latest state
+			var updatedReport models.WeeklyReport
+			if err := c.DB.Preload("Student.Profile").Preload("ReviewedBy.Profile").Preload("ReportCohortInfo").Preload("TeamInfo").
+				Where("id = ?", report.ID).First(&updatedReport).Error; err == nil {
+				updatedReports = append(updatedReports, updatedReport)
+				processedReportIDs = append(processedReportIDs, report.ID)
+			}
+
 			c.NotifyAndTrack(user.UserID, "Weekly Report Unarchived",
 				fmt.Sprintf("Weekly report ID %d was unarchived", report.ID),
 				"Unarchive", "WeeklyReport", &report.ID, report.Status, true,
 			)
 
 		case "delete":
-			c.DB.Unscoped().Delete(&report)
+			// Store report ID before deletion
+			reportID := report.ID
+
+			// Delete related records first to avoid foreign key constraint violations
+			// 1. Delete many-to-many relationship with progress items
+			if err := c.DB.Exec("DELETE FROM weekly_report_progress_items WHERE weekly_report_id = ?", reportID).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete progress items relationships for report #%d", reportID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// 2. Delete comments associated with this report
+			if err := c.DB.Where("weekly_report_ref_id = ?", reportID).Delete(&models.WeeklyReportComment{}).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete comments for report #%d", reportID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// 3. Now delete the report itself
+			if err := c.DB.Unscoped().Delete(&report).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete report #%d", reportID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+			processedReportIDs = append(processedReportIDs, reportID)
+
 			c.NotifyAndTrack(user.UserID, "Weekly Report Deleted",
-				fmt.Sprintf("Weekly report ID %d was permanently deleted", report.ID),
-				"Deletion", "WeeklyReport", &report.ID, report.Status, true,
+				fmt.Sprintf("Weekly report ID %d was permanently deleted", reportID),
+				"Deletion", "WeeklyReport", &reportID, report.Status, true,
 			)
 
 		default:
@@ -1005,5 +1175,50 @@ func (c *Construct) ManageTeamReports(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed on selected weekly reports successfully", input.Action), nil)
+	// Build response with updated reports
+	resp := make([]map[string]interface{}, 0, len(updatedReports))
+	for _, report := range updatedReports {
+		reportData := map[string]interface{}{
+			"id":               report.ID,
+			"report_cohort_id": report.ReportCohortID,
+			"student_id":       report.StudentID,
+			"team_info_id":     report.TeamInfoID,
+			"week_start":       report.WeekStart,
+			"week_end":         report.WeekEnd,
+			"work_done":        report.WorkDone,
+			"planned_work":     report.PlannedWork,
+			"next_week":        report.NextWeek,
+			"challenges":       report.Challenges,
+			"status":           report.Status,
+			"is_archived":      report.IsArchived,
+			"created_at":       report.CreatedAt,
+			"updated_at":       report.UpdatedAt,
+		}
+		if report.Student.Profile.ProfileID != 0 {
+			reportData["student"] = map[string]interface{}{
+				"user_id":    report.Student.UserID,
+				"first_name": report.Student.Profile.FirstName,
+				"last_name":  report.Student.Profile.LastName,
+			}
+		}
+		if report.TeamInfo != nil {
+			reportData["team"] = map[string]interface{}{
+				"team_id": report.TeamInfo.TeamID,
+				"name":    report.TeamInfo.Name,
+			}
+		}
+		resp = append(resp, reportData)
+	}
+
+	// For delete action, include deleted report IDs
+	if input.Action == "delete" {
+		c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed on selected weekly reports successfully", input.Action), map[string]interface{}{
+			"deleted_report_ids": processedReportIDs,
+			"data":               resp,
+		})
+	} else {
+		c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed on selected weekly reports successfully", input.Action), map[string]interface{}{
+			"data": resp,
+		})
+	}
 }

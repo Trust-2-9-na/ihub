@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 	"web/services/assets/models"
@@ -116,8 +117,20 @@ func (c *Construct) GetUsers(w http.ResponseWriter, r *http.Request) {
 				FirstName: u.Profile.FirstName,
 				LastName:  u.Profile.LastName,
 				AvatarURL: func() string {
-					if u.Profile.AvatarURL != nil {
-						return *u.Profile.AvatarURL
+					if u.Profile.AvatarURL != nil && *u.Profile.AvatarURL != "" {
+						// Normalize path to use forward slashes for web URLs
+						normalizedURL := filepath.ToSlash(*u.Profile.AvatarURL)
+						// Construct full URL using the request's scheme and host
+						scheme := "http"
+						if r.TLS != nil {
+							scheme = "https"
+						}
+						host := r.Host
+						// Ensure the URL starts with a forward slash
+						if !strings.HasPrefix(normalizedURL, "/") {
+							normalizedURL = "/" + normalizedURL
+						}
+						return fmt.Sprintf("%s://%s%s", scheme, host, normalizedURL)
 					}
 					return ""
 				}(),
@@ -235,7 +248,7 @@ func (c *Construct) GetMentors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" {
+	if authUser.Role.Name != "SystemAdmin" && authUser.Role.Name != "OpsAdmin" && authUser.Role.Name != "Supervisor" {
 		c.Json(w, http.StatusForbidden, "Access denied", nil)
 		return
 	}

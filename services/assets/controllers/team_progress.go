@@ -149,8 +149,8 @@ func (c *Construct) AddTeamProgressItem(w http.ResponseWriter, r *http.Request) 
 		)
 	}
 
-	// --- Recalculate overall team and entity performance ---
-	if err := c.UpdateEntityWeightedPerformance(body.EntityID); err != nil {
+	// --- Always recalculate entity performance (includes all items for status and performance) ---
+	if err := c.RecalculateEntityPerformance(body.EntityID); err != nil {
 		log.Println("Warning: entity performance recalculation failed:", err)
 	}
 
@@ -209,7 +209,7 @@ func (c *Construct) UpdateTeamProgressItem(w http.ResponseWriter, r *http.Reques
 
 	// --- Fetch the progress item ---
 	var item models.ProgressItem
-	if err := c.DB.Preload("TeamRef").First(&item, itemID).Error; err != nil {
+	if err := c.DB.Preload("TeamDetails").First(&item, itemID).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Progress item not found", nil)
 		return
 	}
@@ -259,9 +259,9 @@ func (c *Construct) UpdateTeamProgressItem(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// --- Recalculate overall team/entity performance ---
+	// --- Always recalculate entity performance (includes all items for status and performance) ---
 	if item.ProgressEntityRefID != nil {
-		if err := c.UpdateEntityWeightedPerformance(*item.ProgressEntityRefID); err != nil {
+		if err := c.RecalculateEntityPerformance(*item.ProgressEntityRefID); err != nil {
 			log.Println("Warning: entity performance recalculation failed:", err)
 		}
 	}
