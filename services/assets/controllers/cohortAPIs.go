@@ -805,3 +805,185 @@ func (c *Construct) UpdateCohort(w http.ResponseWriter, r *http.Request) {
 
 	c.Json(w, http.StatusOK, "Cohort updated successfully", map[string]interface{}{"cohort": resp})
 }
+
+// ------------------------------------------------
+// ** Get All Cohort Members API **
+// ------------------------------------------------
+// Returns all members of cohorts based on role-based access control
+// OpsAdmin and SystemAdmin: can view all cohort members
+// Supervisors, Students, Mentors: can only view members in cohorts they are assigned to
+func (c *Construct) GetCohortMembers(w http.ResponseWriter, r *http.Request) {
+	// --- 1. Get authenticated user from context ---
+	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
+	if !ok || userUUID == "" {
+		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
+		return
+	}
+
+	var user models.User
+	if err := c.DB.Preload("Role").Preload("Profile").
+		Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
+		return
+	}
+
+	// --- 2. Get optional query parameters ---
+	cohortIDStr := r.URL.Query().Get("cohort_id")
+	var cohortID uint64
+	if cohortIDStr != "" {
+		if id, err := strconv.ParseUint(cohortIDStr, 10, 64); err == nil {
+			cohortID = id
+		}
+	}
+
+	// --- 3. Base query to get cohort members ---
+	var cohortMembers []struct {
+		CohortID   uint64
+		CohortName string
+		UserID     uint64
+		Username   string
+		Email      string
+		FirstName  string
+		LastName   string
+		Role       string // Role in cohort (Supervisor, Mentor, Student)
+		SystemRole string // User's system role
+		AssignedAt time.Time
+		IsActive   bool
+	}
+
+	query := c.DB.Table("cohort_users as cu").
+		Select(`
+			c.cohort_id,
+			c.name as cohort_name,
+			u.user_id,
+			u.username,
+			u.email,
+			COALESCE(up.first_name, '') as first_name,
+			COALESCE(up.last_name, '') as last_name,
+			cu.role,
+			r.name as system_role,
+			cu.created_at as assigned_at,
+			u.is_active
+		`).
+		Joins("JOIN cohorts c ON c.cohort_id = cu.cohort_cohort_id").
+		Joins("JOIN users u ON u.user_id = cu.user_user_id").
+		Joins("LEFT JOIN user_profiles up ON up.user_id = u.user_id").
+		Joins("LEFT JOIN roles r ON r.role_id = u.role_id").
+		Where("c.deleted_at IS NULL AND cu.deleted_at IS NULL")
+
+	// --- 4. Role-based access control ---
+	switch user.Role.Name {
+	case "OpsAdmin", "SystemAdmin":
+		// Admins can see all cohort members
+		// No additional filter needed
+
+	case "Supervisor", "Mentor", "Student":
+		// Users can only see members in cohorts they are assigned to
+		roleName := user.Role.Name
+		query = query.Where("c.cohort_id IN (?)",
+			c.DB.Table("cohort_users").
+				Select("cohort_cohort_id").
+				Where("user_user_id = ? AND role = ?", user.UserID, roleName),
+		)
+
+	default:
+		c.Json(w, http.StatusForbidden, "Role not allowed", nil)
+		return
+	}
+
+	// --- 5. Optional cohort filter ---
+	if cohortID > 0 {
+		query = query.Where("c.cohort_id = ?", cohortID)
+	}
+
+	// --- 6. Execute query ---
+	if err := query.Order("c.cohort_id, cu.role, up.last_name, up.first_name").Scan(&cohortMembers).Error; err != nil {
+		c.Json(w, http.StatusInternalServerError, "Failed to fetch cohort members", map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// --- 7. Group members by cohort ---
+	cohortMap := make(map[uint64]map[string]interface{})
+	for _, cm := range cohortMembers {
+		if cohortMap[cm.CohortID] == nil {
+			cohortMap[cm.CohortID] = make(map[string]interface{})
+			cohortMap[cm.CohortID]["cohort_id"] = cm.CohortID
+			cohortMap[cm.CohortID]["cohort_name"] = cm.CohortName
+			cohortMap[cm.CohortID]["supervisors"] = []map[string]interface{}{}
+			cohortMap[cm.CohortID]["mentors"] = []map[string]interface{}{}
+			cohortMap[cm.CohortID]["students"] = []map[string]interface{}{}
+		}
+
+		// Build full name by combining first_name and last_name from database
+		// There is no full_name field in DB, so we combine first_name + last_name
+		firstName := strings.TrimSpace(cm.FirstName)
+		lastName := strings.TrimSpace(cm.LastName)
+
+		var fullName string
+		if firstName != "" && lastName != "" {
+			fullName = fmt.Sprintf("%s %s", firstName, lastName)
+		} else if firstName != "" {
+			fullName = firstName
+		} else if lastName != "" {
+			fullName = lastName
+		} else if cm.Username != "" {
+			// Only use username as fallback if both first and last names are empty
+			fullName = cm.Username
+		} else {
+			fullName = "" // Or could use email as last resort
+		}
+
+		memberInfo := map[string]interface{}{
+			"user_id":     cm.UserID,
+			"full_name":   fullName,
+			"first_name":  cm.FirstName,
+			"last_name":   cm.LastName,
+			"email":       cm.Email,
+			"username":    cm.Username,
+			"system_role": cm.SystemRole,
+			"cohort_role": cm.Role,
+			"is_active":   cm.IsActive,
+			"assigned_at": cm.AssignedAt,
+		}
+
+		// Add to appropriate role group
+		switch strings.ToLower(cm.Role) {
+		case "supervisor":
+			supervisors := cohortMap[cm.CohortID]["supervisors"].([]map[string]interface{})
+			cohortMap[cm.CohortID]["supervisors"] = append(supervisors, memberInfo)
+		case "mentor":
+			mentors := cohortMap[cm.CohortID]["mentors"].([]map[string]interface{})
+			cohortMap[cm.CohortID]["mentors"] = append(mentors, memberInfo)
+		case "student":
+			students := cohortMap[cm.CohortID]["students"].([]map[string]interface{})
+			cohortMap[cm.CohortID]["students"] = append(students, memberInfo)
+		}
+	}
+
+	// --- 8. Convert map to list ---
+	result := make([]map[string]interface{}, 0, len(cohortMap))
+	for _, cohortData := range cohortMap {
+		// Calculate total members
+		supervisors := cohortData["supervisors"].([]map[string]interface{})
+		mentors := cohortData["mentors"].([]map[string]interface{})
+		students := cohortData["students"].([]map[string]interface{})
+
+		cohortData["total_members"] = len(supervisors) + len(mentors) + len(students)
+		cohortData["supervisor_count"] = len(supervisors)
+		cohortData["mentor_count"] = len(mentors)
+		cohortData["student_count"] = len(students)
+
+		result = append(result, cohortData)
+	}
+
+	// --- 9. Build response ---
+	resp := map[string]interface{}{
+		"cohorts": result,
+		"count":   len(result),
+	}
+	if cohortID > 0 {
+		resp["cohort_id"] = cohortID
+	}
+
+	c.Json(w, http.StatusOK, "Cohort members retrieved successfully", resp)
+}

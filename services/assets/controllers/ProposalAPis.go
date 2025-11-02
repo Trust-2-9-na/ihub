@@ -3,8 +3,11 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -34,44 +37,7 @@ type ProposalSummary struct {
 
 // ─── CREATE PROPOSAL ───────────────────────────────────────────
 func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Title    string  `json:"title"`
-		Abstract string  `json:"abstract"`
-		Document *string `json:"document_url"`
-		Category string  `json:"category"`
-		Subfield *string `json:"subfield,omitempty"`
-		TeamID   *uint64 `json:"team_id"`
-		WindowID uint64  `json:"window_id"`
-		Submit   bool    `json:"submit"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-
-	if payload.Title == "" || payload.Abstract == "" {
-		http.Error(w, "title and abstract required", http.StatusBadRequest)
-		return
-	}
-
-	// ─── Validate Document Type ────────────────────────────────
-	if payload.Document != nil && *payload.Document != "" {
-		allowedExts := []string{".pdf", ".docx"}
-		validExt := false
-		for _, ext := range allowedExts {
-			if strings.HasSuffix(strings.ToLower(*payload.Document), ext) {
-				validExt = true
-				break
-			}
-		}
-		if !validExt {
-			http.Error(w, "invalid document type: only PDF and DOCX files are allowed", http.StatusBadRequest)
-			return
-		}
-	}
-
-	// ─── Get user from context ───────────────────────────────
+	// ─── Get user from context first ───────────────────────────────
 	userUUID, ok := middlewares.GetUserUUIDFromContext(r.Context())
 	if !ok || userUUID == "" {
 		c.Json(w, http.StatusUnauthorized, "Unauthorized", nil)
@@ -84,28 +50,191 @@ func (c *Construct) CreateProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ─── Parse request based on Content-Type ───────────────────────
+	contentType := r.Header.Get("Content-Type")
+	var (
+		title       string
+		abstract    string
+		category    string
+		subfield    *string
+		teamID      *uint64
+		windowID    uint64
+		documentURL *string
+	)
+
+	switch {
+	case strings.HasPrefix(contentType, "application/json"):
+		// Parse JSON payload
+		var payload struct {
+			Title    string  `json:"title"`
+			Abstract string  `json:"abstract"`
+			Document *string `json:"document_url"`
+			Category string  `json:"category"`
+			Subfield *string `json:"subfield,omitempty"`
+			TeamID   *uint64 `json:"team_id"`
+			WindowID uint64  `json:"window_id"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		title = payload.Title
+		abstract = payload.Abstract
+		category = payload.Category
+		subfield = payload.Subfield
+		teamID = payload.TeamID
+		windowID = payload.WindowID
+		documentURL = payload.Document
+
+		// ─── Validate Document Type if provided as URL ────────────────────────────────
+		if documentURL != nil && *documentURL != "" {
+			allowedExts := []string{".pdf", ".docx"}
+			validExt := false
+			for _, ext := range allowedExts {
+				if strings.HasSuffix(strings.ToLower(*documentURL), ext) {
+					validExt = true
+					break
+				}
+			}
+			if !validExt {
+				c.Json(w, http.StatusBadRequest, "Invalid document type: only PDF and DOCX files are allowed", nil)
+				return
+			}
+		}
+
+	case strings.HasPrefix(contentType, "multipart/form-data"):
+		// Parse multipart form
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Parse form fields
+		title = r.FormValue("title")
+		abstract = r.FormValue("abstract")
+		category = r.FormValue("category")
+
+		if sf := r.FormValue("subfield"); sf != "" {
+			s := sf
+			subfield = &s
+		}
+
+		if tid := r.FormValue("team_id"); tid != "" {
+			if parsedID, err := strconv.ParseUint(tid, 10, 64); err == nil {
+				teamID = &parsedID
+			}
+		}
+
+		if wid := r.FormValue("window_id"); wid != "" {
+			if parsedID, err := strconv.ParseUint(wid, 10, 64); err == nil {
+				windowID = parsedID
+			}
+		}
+
+		// ─── Handle file upload ────────────────────────────────
+		file, handler, err := r.FormFile("document")
+		if err != nil && err != http.ErrMissingFile {
+			c.Json(w, http.StatusBadRequest, "Failed to read uploaded file", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		if err == nil && handler != nil {
+			defer file.Close()
+
+			// Validate file extension
+			allowedExts := map[string]bool{".pdf": true, ".docx": true}
+			ext := strings.ToLower(filepath.Ext(handler.Filename))
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid file type. Only PDF and DOCX files are allowed.", nil)
+				return
+			}
+
+			// Validate MIME type
+			buff := make([]byte, 512)
+			if _, err := file.Read(buff); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+			file.Seek(0, io.SeekStart)
+
+			mimeType := http.DetectContentType(buff)
+			allowedMIMEs := map[string]bool{
+				"application/pdf":    true,
+				"application/msword": true,
+				"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+			}
+
+			if !allowedMIMEs[mimeType] {
+				c.Json(w, http.StatusBadRequest, fmt.Sprintf("Invalid file content type: %s. Only PDF and DOCX allowed.", mimeType), nil)
+				return
+			}
+
+			// Create upload directory
+			uploadDir := filepath.Join("uploads", "proposals")
+			if err := os.MkdirAll(uploadDir, 0755); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to create upload directory", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Generate unique filename
+			filename := fmt.Sprintf("proposal_%d_%d%s", user.UserID, time.Now().Unix(), ext)
+			filePath := filepath.Join(uploadDir, filename)
+			filePath = filepath.Clean(filePath)
+
+			// Save file
+			dest, err := os.Create(filePath)
+			if err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+			defer dest.Close()
+
+			if _, err := io.Copy(dest, file); err != nil {
+				os.Remove(filePath) // Clean up on failure
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Use forward slashes for URL (works on all platforms)
+			url := filepath.ToSlash(filePath)
+			documentURL = &url
+		}
+
+	default:
+		c.Json(w, http.StatusUnsupportedMediaType, "Unsupported Content-Type. Use application/json or multipart/form-data.", nil)
+		return
+	}
+
+	// ─── Validate required fields ────────────────────────────────
+	if title == "" || abstract == "" {
+		c.Json(w, http.StatusBadRequest, "Title and abstract are required", nil)
+		return
+	}
+
 	// ─── Validate Submission Window ─────────────────────────
 	var window models.ProposalSubmissionWindow
-	if err := c.DB.First(&window, "window_id = ?", payload.WindowID).Error; err != nil {
-		http.Error(w, "submission window not found", http.StatusBadRequest)
+	if err := c.DB.First(&window, "window_id = ?", windowID).Error; err != nil {
+		c.Json(w, http.StatusBadRequest, "Submission window not found", nil)
 		return
 	}
 
 	now := time.Now()
 	if now.Before(window.StartDate) || now.After(window.Deadline) || window.IsArchived {
-		http.Error(w, "submission window is not active", http.StatusBadRequest)
+		c.Json(w, http.StatusBadRequest, "Submission window is not active", nil)
 		return
 	}
 
 	// ─── Create Proposal ─────────────────────────────────────
 	proposal := models.Proposal{
-		Title:          payload.Title,
-		Abstract:       payload.Abstract,
-		DocumentURL:    payload.Document,
-		Category:       payload.Category,
-		Subfield:       payload.Subfield,
-		ProposalTeamID: payload.TeamID,
-		WindowID:       payload.WindowID,
+		Title:          title,
+		Abstract:       abstract,
+		DocumentURL:    documentURL,
+		Category:       category,
+		Subfield:       subfield,
+		ProposalTeamID: teamID,
+		WindowID:       windowID,
 		Status:         "Submitted",
 		SubmittedByID:  user.UserID,
 	}
@@ -464,7 +593,7 @@ func (c *Construct) GetOwnProposals(w http.ResponseWriter, r *http.Request) {
 	for _, p := range proposals {
 		// --- Reviews ---
 		var reviews []models.ProposalReview
-		if err := c.DB.Preload("ReviewedBy.Profile").Where("proposal_id = ?", p.ProposalID).Find(&reviews).Error; err != nil {
+		if err := c.DB.Preload("ReviewedBy.Profile").Where("related_proposal_id = ?", p.ProposalID).Find(&reviews).Error; err != nil {
 			reviews = []models.ProposalReview{}
 		}
 
@@ -1022,7 +1151,7 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 	case "Supervisor":
 		log.Println("[DEBUG] Supervisor detected: fetching proposals reviewed by them")
 		// Join proposals with reviews table to fetch proposals reviewed by this supervisor
-		query = query.Joins("JOIN proposal_reviews pr ON pr.proposal_id = proposals.proposal_id").
+		query = query.Joins("JOIN proposal_reviews pr ON pr.related_proposal_id = proposals.proposal_id").
 			Where("pr.reviewed_by_id = ? AND pr.decision IN ?", user.UserID, []string{"Approved", "Rejected"}).
 			Distinct("proposals.proposal_id") // Avoid duplicates
 
@@ -1046,7 +1175,7 @@ func (c *Construct) getProposalsByStatus(w http.ResponseWriter, r *http.Request,
 		// Fetch reviews for this proposal
 		var proposalReviews []models.ProposalReview
 		if err := c.DB.Preload("ReviewedBy.Profile").
-			Where("proposal_id = ? AND decision IN ?", p.ProposalID, []string{"Approved", "Rejected"}).
+			Where("related_proposal_id = ? AND decision IN ?", p.ProposalID, []string{"Approved", "Rejected"}).
 			Find(&proposalReviews).Error; err != nil {
 			log.Println("[ERROR] Failed to fetch reviews for proposal", p.ProposalID, ":", err)
 		}

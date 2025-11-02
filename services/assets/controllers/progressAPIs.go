@@ -602,7 +602,7 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 	var item models.ProgressItem
 	if err := c.DB.Preload("ProgressEntityRef").
 		Preload("AssignedTo").
-		Preload("TeamRef.UserTeams.UserRef.Profile").
+		Preload("TeamDetails.UserTeams.UserRef.Profile").
 		First(&item, id).Error; err != nil {
 		c.Json(w, http.StatusNotFound, "Progress item not found", nil)
 		return
@@ -685,8 +685,8 @@ func (c *Construct) UpdateProgressItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Recalculate entity performance if verified ---
-	if item.ProgressEntityRefID != nil && item.VerifiedStatus == "Verified" {
+	// --- Always recalculate entity performance (now includes all items, not just verified) ---
+	if item.ProgressEntityRefID != nil {
 		if err := c.RecalculateEntityPerformance(*item.ProgressEntityRefID); err != nil {
 			log.Printf("⚠️ Entity performance recalculation failed for EntityID %d: %v\n", *item.ProgressEntityRefID, err)
 		}
@@ -783,7 +783,7 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 	var items []models.ProgressItem
 	if err := c.DB.
 		Preload("ProgressEntityRef").
-		Preload("TeamRef.TeamMembers.User.Profile").
+		Preload("TeamDetails.UserTeams.UserRef.Profile").
 		Where("id IN ?", input.ItemIDs).
 		Find(&items).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to fetch progress items", map[string]interface{}{"error": err.Error()})
@@ -795,7 +795,9 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var archivedIDs, unarchivedIDs, deletedIDs []uint64
+	var updatedItems []models.ProgressItem
+	var processedItemIDs []uint64
+	var deletedItemIDs []uint64
 
 	for _, item := range items {
 		action := strings.ToLower(input.Action)
@@ -805,8 +807,17 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		case "archive":
 			item.IsArchived = true
 			item.UpdatedAt = now
-			if err := c.DB.Save(&item).Error; err == nil {
-				archivedIDs = append(archivedIDs, item.ID)
+			if err := c.DB.Save(&item).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to archive item #%d", item.ID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Reload item to get latest state
+			var updatedItem models.ProgressItem
+			if err := c.DB.Preload("ProgressEntityRef").Preload("TeamDetails").
+				Where("id = ?", item.ID).First(&updatedItem).Error; err == nil {
+				updatedItems = append(updatedItems, updatedItem)
+				processedItemIDs = append(processedItemIDs, item.ID)
 			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Archived",
@@ -827,8 +838,17 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		case "unarchive":
 			item.IsArchived = false
 			item.UpdatedAt = now
-			if err := c.DB.Save(&item).Error; err == nil {
-				unarchivedIDs = append(unarchivedIDs, item.ID)
+			if err := c.DB.Save(&item).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to unarchive item #%d", item.ID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Reload item to get latest state
+			var updatedItem models.ProgressItem
+			if err := c.DB.Preload("ProgressEntityRef").Preload("TeamDetails").
+				Where("id = ?", item.ID).First(&updatedItem).Error; err == nil {
+				updatedItems = append(updatedItems, updatedItem)
+				processedItemIDs = append(processedItemIDs, item.ID)
 			}
 
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Unarchived",
@@ -846,23 +866,39 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 			}
 
 		case "delete":
-			// Hard delete (supervisor-only)
-			if err := c.DB.Unscoped().Delete(&item).Error; err == nil {
-				deletedIDs = append(deletedIDs, item.ID)
+			// Store item ID before deletion
+			itemID := item.ID
+			entityType := item.ProgressEntityRef.EntityType
+			entityName := item.ProgressEntityRef.EntityName
+			phaseName := item.PhaseName
+
+			// Delete related records first to avoid foreign key constraint violations
+			// 1. Delete many-to-many relationship with weekly reports
+			if err := c.DB.Exec("DELETE FROM weekly_report_progress_items WHERE progress_item_id = ?", itemID).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete progress item relationships for item #%d", itemID), map[string]interface{}{"error": err.Error()})
+				return
 			}
 
+			// 2. Now delete the progress item itself
+			if err := c.DB.Unscoped().Delete(&item).Error; err != nil {
+				c.Json(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete item #%d", itemID), map[string]interface{}{"error": err.Error()})
+				return
+			}
+			deletedItemIDs = append(deletedItemIDs, itemID)
+			processedItemIDs = append(processedItemIDs, itemID)
+
 			c.NotifyAndTrack(currentUser.UserID, "Progress Item Deleted Permanently",
-				fmt.Sprintf("Progress item '%s' in %s '%s' was permanently deleted", item.PhaseName, item.ProgressEntityRef.EntityType, item.ProgressEntityRef.EntityName),
+				fmt.Sprintf("Progress item '%s' in %s '%s' was permanently deleted", phaseName, entityType, entityName),
 				"Deletion",
-				item.ProgressEntityRef.EntityType,
-				&item.ID,
+				entityType,
+				&itemID,
 				item.VerifiedStatus,
 				true,
 			)
 
 			if item.TeamRefID != nil {
 				c.notifyTeamMembers(*item.TeamRefID, fmt.Sprintf("Team progress item '%s' was permanently deleted by %s.",
-					item.PhaseName, currentUser.Username))
+					phaseName, currentUser.Username))
 			}
 
 		default:
@@ -878,16 +914,54 @@ func (c *Construct) ManageProgressItems(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// --- Build response with updated items ---
+	itemsResp := make([]map[string]interface{}, 0, len(updatedItems))
+	for _, item := range updatedItems {
+		itemData := map[string]interface{}{
+			"id":              item.ID,
+			"phase_name":      item.PhaseName,
+			"progress_type":   item.ProgressType,
+			"student_status":  item.StudentStatus,
+			"verified_status": item.VerifiedStatus,
+			"weight":          item.Weight,
+			"performance":     item.Performance,
+			"is_archived":     item.IsArchived,
+			"team_ref_id":     item.TeamRefID,
+			"created_at":      item.CreatedAt,
+			"updated_at":      item.UpdatedAt,
+		}
+
+		if item.ProgressEntityRef != nil {
+			itemData["entity"] = map[string]interface{}{
+				"id":          item.ProgressEntityRefID,
+				"entity_name": item.ProgressEntityRef.EntityName,
+				"entity_type": item.ProgressEntityRef.EntityType,
+			}
+		}
+
+		if item.TeamDetails != nil {
+			itemData["team"] = map[string]interface{}{
+				"team_id": item.TeamDetails.TeamID,
+				"name":    item.TeamDetails.Name,
+			}
+		}
+
+		itemsResp = append(itemsResp, itemData)
+	}
+
 	// --- Prepare response ---
-	response := map[string]interface{}{}
-	if len(archivedIDs) > 0 {
-		response["archived_ids"] = archivedIDs
+	response := map[string]interface{}{
+		"data": itemsResp,
 	}
-	if len(unarchivedIDs) > 0 {
-		response["unarchived_ids"] = unarchivedIDs
+
+	// For delete action, include deleted IDs
+	if strings.ToLower(input.Action) == "delete" {
+		response["deleted_ids"] = deletedItemIDs
 	}
-	if len(deletedIDs) > 0 {
-		response["deleted_ids"] = deletedIDs
+
+	// Include processed IDs
+	if len(processedItemIDs) > 0 {
+		response["processed_ids"] = processedItemIDs
 	}
 
 	c.Json(w, http.StatusOK, fmt.Sprintf("Action '%s' performed successfully", input.Action), response)

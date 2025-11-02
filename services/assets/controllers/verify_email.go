@@ -6,12 +6,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"web/services/assets/models"
 	"web/services/utils"
 )
 
-// Ve// VerifyEmail handles the verification of a user's email using a token
+// VerifyEmail handles the verification of a user's email using a token
 
 func (c *Construct) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
@@ -120,12 +121,17 @@ func (c *Construct) ResendVerificationEmail(w http.ResponseWriter, r *http.Reque
 
 	// 5️⃣ Send email asynchronously
 	go func() {
-		verifyURL := fmt.Sprintf("%s?token=%s", os.Getenv("FRONTEND_URL"), token)
+		frontendURL := strings.TrimRight(os.Getenv("FRONTEND_URL"), "/")
+		verifyURL := fmt.Sprintf("%s/verify-email?token=%s", frontendURL, token)
 		body := fmt.Sprintf(
-			"Hello %s %s,<br><br>Please verify your email by clicking <a href='%s'>here</a>.<br><br>Expires in 24 hours.",
+			`<p>Hello %s %s,</p>
+<p>Thank you for registering with IHub. Please verify your email address by clicking the link below:</p>
+<p><a href="%s">Verify Email Address</a></p>
+<p>This verification link will expire in 24 hours.</p>
+<p>If you did not create an account, please ignore this email.</p>`,
 			user.Profile.FirstName, user.Profile.LastName, verifyURL,
 		)
-		if err := c.SendEmailNotification(user.Email, "Verify Your Email", body); err != nil {
+		if err := c.SendEmailNotification(user.Email, "Verify Your Email Address", body); err != nil {
 			log.Printf("[ERROR] Failed to send verification email to %s: %v", user.Email, err)
 		}
 	}()
@@ -137,7 +143,7 @@ func (c *Construct) ResendVerificationEmail(w http.ResponseWriter, r *http.Reque
 	c.NotifyAndTrack(
 		user.UserID,
 		"Email Verified",
-		fmt.Sprintf("Hi %s, your email (%s) has been successfully verified.", fullName, user.Email),
+		fmt.Sprintf("Your email address (%s) has been successfully verified.", user.Email),
 		"Email Verification",
 		"User",
 		&user.UserID,

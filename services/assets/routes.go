@@ -19,6 +19,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	dbService := database.New()
 	db := dbService.DB()
 
+	// Serve static files from uploads directory
+	r.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads/"))))
+
 	r.HandleFunc("/assets", c.Index).Methods("GET")
 	api := r.PathPrefix("/api").Subrouter()
 
@@ -104,6 +107,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/unassign/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin"}, "assign_users")(http.HandlerFunc(c.UnassignSupervisorsFromCohort))).Methods("DELETE")
 	admin.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
 	admin.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
+	admin.Handle("/cohort/members", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetCohortMembers))).Methods("GET")
+	admin.Handle("/mentor/students", middlewares.RoleAuthorization(db, []string{"OpsAdmin", "SystemAdmin"})(http.HandlerFunc(c.GetMentorStudentAssignments))).Methods("GET")
 
 	// Tracking
 	admin.Handle("/tracking/cohorts", middlewares.RoleAuthorization(db, []string{"Supervisor", "Mentor"}, "view_reports")(http.HandlerFunc(c.CohortTrackingHistory))).Methods("GET")
@@ -170,7 +175,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	admin.Handle("/list/download/resources", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ListDownloadableResources))).Methods("GET")   // Get download list
 	admin.Handle("/download/proposal/{proposal_id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.DownloadProposal))).Methods("GET")    // Download a Proposal
 	admin.Handle("/list/download/proposals", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ListDownloadableProposals))).Methods("GET")   // Get download list
-	admin.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report
+	admin.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report (uploaded document)
+	admin.Handle("/export/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ExportWeeklyReportData))).Methods("GET")   // Export report data (JSON)
 	admin.Handle("/list/download/reports", middlewares.RoleAuthorization(db, []string{"OpsAdmin"})(http.HandlerFunc(c.ListDownloadableWeeklyReports))).Methods("GET") // Get download list
 
 	// -----------------------------
@@ -218,6 +224,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Cohort Mentor Assignments
 	supervisor.Handle("/cohort/supervisors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortSupervisors))).Methods("GET")
+	supervisor.Handle("/cohort/members", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetCohortMembers))).Methods("GET")
 	supervisor.Handle("/assign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignMentorsToCohort))).Methods("POST")
 	supervisor.Handle("/reassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ReassignMentors))).Methods("PUT")
 	supervisor.Handle("/unassign/mentors", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.UnassignMentors))).Methods("DELETE")
@@ -226,6 +233,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	//Student Mentor Assignments
 	supervisor.Handle("/assign", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignStudentsToMentor))).Methods("POST")
 	supervisor.Handle("/assign", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.AssignSupervisorsToTeam))).Methods("POST")
+	supervisor.Handle("/mentor/students", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.GetMentorStudentAssignments))).Methods("GET")
 
 	// team management
 	supervisor.Handle("/team", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.CreateTeam))).Methods("POST")
@@ -261,7 +269,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	supervisor.Handle("/list/download/resources", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ListDownloadableResources))).Methods("GET")   // Retrieve download list
 	supervisor.Handle("/download/proposal/{proposal_id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.DownloadProposal))).Methods("GET")    // Download a Proposal
 	supervisor.Handle("/list/download/proposals", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ListDownloadableProposals))).Methods("GET")   // retrieve download list
-	supervisor.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report
+	supervisor.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report (uploaded document)
+	supervisor.Handle("/export/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ExportWeeklyReportData))).Methods("GET")   // Export report data (JSON)
 	supervisor.Handle("/list/download/reports", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.ListDownloadableWeeklyReports))).Methods("GET") // retrieve download list
 	supervisor.Handle("/download/resources/{resource_id}", middlewares.RoleAuthorization(db, []string{"Supervisor"})(http.HandlerFunc(c.DownloadResource))).Methods("GET")   // Download a Resource
 
@@ -294,6 +303,8 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	mentor.Handle("/cohorts", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.GetCohorts))).Methods("GET")
 	mentor.Handle("/tracking/cohorts", middlewares.RoleAuthorization(db, []string{"Mentor"}, "view_reports")(http.HandlerFunc(c.CohortTrackingHistory))).Methods("GET")
 	mentor.Handle("/cohort/mentors", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetCohortMentors))).Methods("GET")
+	mentor.Handle("/cohort/members", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetCohortMembers))).Methods("GET")
+	mentor.Handle("/students", middlewares.RoleAuthorization(db, []string{"Mentor"})(http.HandlerFunc(c.GetMentorStudentAssignments))).Methods("GET")
 
 	// mentor feedback routes
 	mentor.Handle("/mentor/feedback", middlewares.RoleAuthorization(db, []string{"mentor"})(http.HandlerFunc(c.CreateMentorFeedback))).Methods("POST")
@@ -351,6 +362,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/notifications", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DeleteNotification))).Methods("DELETE")
 	// cohorts
 	student.Handle("/cohorts", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetCohorts))).Methods("GET")
+	student.Handle("/cohort/members", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetCohortMembers))).Methods("GET")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddProgressItem))).Methods("POST")
 	student.Handle("/progress/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateProgressItem))).Methods("PUT")
 	student.Handle("/tracking/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetStudentProgressItems))).Methods("GET")
@@ -374,6 +386,9 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/mentor/feedback", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetMentorFeedback))).Methods("GET")
 	student.Handle("/mentor/feedback", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ManageMentorFeedbacks))).Methods("DELETE")
 
+	// mentor assignments
+	student.Handle("/mentor/assignments", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetMentorStudentAssignments))).Methods("GET")
+
 	// team checks
 	student.Handle("/team", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeams))).Methods("GET")
 
@@ -386,7 +401,7 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 
 	// Team progress Items
 	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.AddTeamProgressItem))).Methods("POST")
-	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateTeamProgressItem))).Methods("PUT")
+	student.Handle("/team/progress/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateTeamProgressItem))).Methods("PUT")
 	student.Handle("/team/progress", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetTeamProgressEntities))).Methods("GET")
 
 	// Team Reports
@@ -406,13 +421,16 @@ func NewRouter(r *mux.Router, DB *gorm.DB) {
 	student.Handle("/resources/{id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.UpdateResource))).Methods("PUT")
 	student.Handle("/resources/{resource_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetResourceByID))).Methods("GET") // Get A resource by ID
 	student.Handle("/resources", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetResources))).Methods("GET")                  // GEt ALl resources
-	student.Handle("/list/resources", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ListResources))).Methods("GET")            // List resources per cohort, user, or team
+	student.Handle("/list/resources", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ListResources))).Methods("GET")            // List resources per
+
+	student.Handle("/progress/entities", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.GetCohortProgressEntities))).Methods("GET")
 
 	// Download Routes
 	student.Handle("/download/resources/{resource_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DownloadResource))).Methods("GET")   // Download a Resource
 	student.Handle("/list/download/resources", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ListDownloadableResources))).Methods("GET")   // Get download list
 	student.Handle("/download/proposal/{proposal_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DownloadProposal))).Methods("GET")    // Download a Proposal
 	student.Handle("/list/download/proposals", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ListDownloadableProposals))).Methods("GET")   // Get download list
-	student.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report
+	student.Handle("/download/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.DownloadWeeklyReport))).Methods("GET")   // Download a Report (uploaded document)
+	student.Handle("/export/reports/{report_id}", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ExportWeeklyReportData))).Methods("GET")   // Export report data (JSON)
 	student.Handle("/list/download/reports", middlewares.RoleAuthorization(db, []string{"Student"})(http.HandlerFunc(c.ListDownloadableWeeklyReports))).Methods("GET") // Get download list
 }

@@ -10,6 +10,7 @@ import (
 	"web/services/assets/models"
 	"web/services/utils"
 
+	"github.com/google/uuid"
 	"google.golang.org/api/idtoken"
 	"gorm.io/gorm"
 )
@@ -46,12 +47,18 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 	firstName := fmt.Sprintf("%v", payload.Claims["given_name"])
 	lastName := fmt.Sprintf("%v", payload.Claims["family_name"])
 
+	// Extract profile picture URL from Google token
+	var pictureURL string
+	if pic, ok := payload.Claims["picture"].(string); ok && pic != "" {
+		pictureURL = pic
+	}
+
 	// Check if user already exists
 	var user models.User
 	err = c.DB.Preload("Profile").Preload("Role").Where("email = ?", email).First(&user).Error
 	if err == nil {
 		// ✅ User exists → create a new session and JWT
-		sessionUUID, _ := utils.GenerateRandomString(32)
+		sessionUUID := uuid.New().String()
 		session := models.Session{
 			SessionUUID:     sessionUUID,
 			SessionUserID:   user.UserID,
@@ -134,7 +141,8 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 			newUser = &u
 			return nil
 		},
-		true, // isGoogle
+		true,       // isGoogle
+		pictureURL, // Google profile picture URL
 	)
 
 	if newUser == nil {
@@ -143,7 +151,7 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Create session for new user
-	sessionUUID, _ := utils.GenerateRandomString(32)
+	sessionUUID := uuid.New().String()
 	session := models.Session{
 		SessionUUID:     sessionUUID,
 		SessionUserID:   newUser.UserID,
@@ -153,10 +161,6 @@ func (c *Construct) googleSignupHandler(w http.ResponseWriter, r *http.Request, 
 		UserAgent:       r.UserAgent(),
 		IPAddress:       r.RemoteAddr,
 		LastActiveAt:    time.Now(),
-	}
-	if err := c.DB.Create(&session).Error; err != nil {
-		c.Json(w, http.StatusInternalServerError, "Failed to create session", nil)
-		return
 	}
 
 	token, err := utils.GenerateJWT(newUser.UserUUID, newUser.Role.Name, session.SessionUUID)

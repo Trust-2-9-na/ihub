@@ -114,6 +114,24 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 	// --- Build response ---
 	profiles := []map[string]interface{}{}
 	for _, user := range users {
+		// Normalize avatar URL: convert backslashes to forward slashes for web URLs
+		var avatarURL interface{} = user.Profile.AvatarURL
+		if user.Profile.AvatarURL != nil && *user.Profile.AvatarURL != "" {
+			normalizedURL := filepath.ToSlash(*user.Profile.AvatarURL)
+			// Construct full URL using the request's scheme and host
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			host := r.Host
+			// Ensure the URL starts with a forward slash
+			if !strings.HasPrefix(normalizedURL, "/") {
+				normalizedURL = "/" + normalizedURL
+			}
+			fullURL := fmt.Sprintf("%s://%s%s", scheme, host, normalizedURL)
+			avatarURL = fullURL
+		}
+		
 		resp := map[string]interface{}{
 			"user_id":    user.UserID,
 			"email":      user.Email,
@@ -122,7 +140,7 @@ func (c *Construct) GetProfile(w http.ResponseWriter, r *http.Request) {
 			"phone":      user.Profile.Phone,
 			"address":    user.Profile.Address,
 			"bio":        user.Profile.Bio,
-			"avatar_url": user.Profile.AvatarURL,
+			"avatar_url": avatarURL,
 		}
 
 		if user.StudentProfile != nil {
@@ -279,7 +297,9 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		profile.AvatarURL = &savePath // save relative path or URL
+		// Normalize path to use forward slashes for web URLs
+		normalizedPath := filepath.ToSlash(savePath)
+		profile.AvatarURL = &normalizedPath
 	} else if input.AvatarURL != nil && *input.AvatarURL != "" {
 		// fallback to existing string URL if client passes it
 		profile.AvatarURL = input.AvatarURL
@@ -300,13 +320,13 @@ func (c *Construct) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 		go func() {
 			body := fmt.Sprintf(`
-		Hello %s,<br><br>
-		You requested to update your email to <strong>%s</strong>.<br>
-		Please verify it by clicking the link below:<br><br>
-		<a href="%s">%s</a><br><br>
-		If you did not request this, please ignore this email.
-	`, profile.FirstName, *input.Email, verifyURL, verifyURL)
-			_ = c.SendEmailNotification(*input.Email, "Verify Your New Email", body)
+		<p>Hello %s,</p>
+		<p>You have requested to update your email address to <strong>%s</strong>.</p>
+		<p>Please verify this new email address by clicking the link below:</p>
+		<p><a href="%s">Verify New Email Address</a></p>
+		<p>If you did not request this change, please ignore this email and your current email address will remain unchanged.</p>
+	`, profile.FirstName, *input.Email, verifyURL)
+			_ = c.SendEmailNotification(*input.Email, "Verify Your New Email Address", body)
 		}()
 
 	}
@@ -479,7 +499,9 @@ func (c *Construct) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile.AvatarURL = &avatarPath
+	// Normalize path to use forward slashes for web URLs
+	normalizedPath := filepath.ToSlash(avatarPath)
+	profile.AvatarURL = &normalizedPath
 	if err := c.DB.Save(&profile).Error; err != nil {
 		c.Json(w, http.StatusInternalServerError, "Failed to update avatar", map[string]interface{}{"error": err.Error()})
 		return
