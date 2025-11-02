@@ -283,70 +283,8 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	proposalIDStr := vars["proposal_id"]
 	proposalID, err := strconv.ParseUint(proposalIDStr, 10, 64)
 	if err != nil {
-		http.Error(w, "invalid proposal id", http.StatusBadRequest)
+		c.Json(w, http.StatusBadRequest, "Invalid proposal ID", nil)
 		return
-	}
-
-	var payload struct {
-		Title    *string `json:"title"`
-		Abstract *string `json:"abstract"`
-		Document *string `json:"document_url"` // updated file URL
-		Category *string `json:"category"`
-		Subfield *string `json:"subfield"`
-		WindowID *uint64 `json:"window_id"`
-		TeamID   *uint64 `json:"team_id"`
-		Submit   *bool   `json:"submit"` // optional submit flag
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-
-	// ─── Validate Document Type (PDF or DOCX only) ─────────────────────────────
-	if payload.Document != nil && *payload.Document != "" {
-		allowedExts := []string{".pdf", ".docx"}
-		allowedMIMEs := []string{
-			"application/pdf",
-			"application/msword",
-			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		}
-
-		// --- Extension validation ---
-		validExt := false
-		for _, ext := range allowedExts {
-			if strings.HasSuffix(strings.ToLower(*payload.Document), ext) {
-				validExt = true
-				break
-			}
-		}
-
-		if !validExt {
-			http.Error(w, "invalid document type: only PDF and DOCX files are allowed", http.StatusBadRequest)
-			return
-		}
-
-		// --- MIME type validation (only if file bytes available) ---
-		file, _, err := r.FormFile("document")
-		if err == nil {
-			defer file.Close()
-			buf := make([]byte, 512)
-			_, _ = file.Read(buf)
-			mimeType := http.DetectContentType(buf)
-
-			validMime := false
-			for _, m := range allowedMIMEs {
-				if mimeType == m {
-					validMime = true
-					break
-				}
-			}
-
-			if !validMime {
-				http.Error(w, "invalid file content type", http.StatusBadRequest)
-				return
-			}
-		}
 	}
 
 	// ─── Get Current User ──────────────────────────────────────────────────────
@@ -358,60 +296,231 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 
 	var user models.User
 	if err := c.DB.Where("user_uuid = ?", userUUID).First(&user).Error; err != nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
+		c.Json(w, http.StatusUnauthorized, "User not found", nil)
 		return
 	}
 
 	// ─── Fetch Proposal ───────────────────────────────────────────────────────
 	var proposal models.Proposal
 	if err := c.DB.First(&proposal, "proposal_id = ?", proposalID).Error; err != nil {
-		http.Error(w, "proposal not found", http.StatusNotFound)
+		c.Json(w, http.StatusNotFound, "Proposal not found", nil)
 		return
 	}
 
 	// ─── Authorization Check ───────────────────────────────────────────────────
 	if proposal.SubmittedByID != user.UserID {
-		http.Error(w, "not allowed to update this proposal", http.StatusForbidden)
+		c.Json(w, http.StatusForbidden, "Not allowed to update this proposal", nil)
+		return
+	}
+
+	// ─── Parse request based on Content-Type ─────────────────────────────────
+	contentType := r.Header.Get("Content-Type")
+
+	var (
+		title       *string
+		abstract    *string
+		category    *string
+		subfield    *string
+		windowID    *uint64
+		teamID      *uint64
+		documentURL *string
+		submit      *bool
+	)
+
+	switch {
+	case strings.HasPrefix(contentType, "application/json"):
+		// Parse JSON payload
+		var payload struct {
+			Title    *string `json:"title"`
+			Abstract *string `json:"abstract"`
+			Document *string `json:"document_url"`
+			Category *string `json:"category"`
+			Subfield *string `json:"subfield,omitempty"`
+			WindowID *uint64 `json:"window_id"`
+			TeamID   *uint64 `json:"team_id"`
+			Submit   *bool   `json:"submit"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			c.Json(w, http.StatusBadRequest, "Invalid JSON payload", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		title = payload.Title
+		abstract = payload.Abstract
+		category = payload.Category
+		subfield = payload.Subfield
+		windowID = payload.WindowID
+		teamID = payload.TeamID
+		submit = payload.Submit
+		documentURL = payload.Document
+
+		// ─── Validate Document Type if provided as URL ────────────────────────────────
+		if documentURL != nil && *documentURL != "" {
+			allowedExts := []string{".pdf", ".docx"}
+			validExt := false
+			for _, ext := range allowedExts {
+				if strings.HasSuffix(strings.ToLower(*documentURL), ext) {
+					validExt = true
+					break
+				}
+			}
+			if !validExt {
+				c.Json(w, http.StatusBadRequest, "Invalid document type: only PDF and DOCX files are allowed", nil)
+				return
+			}
+		}
+
+	case strings.HasPrefix(contentType, "multipart/form-data"):
+		// Parse multipart form
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+			c.Json(w, http.StatusBadRequest, "Failed to parse form data", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		// Parse form fields
+		if t := r.FormValue("title"); t != "" {
+			title = &t
+		}
+		if a := r.FormValue("abstract"); a != "" {
+			abstract = &a
+		}
+		if cat := r.FormValue("category"); cat != "" {
+			category = &cat
+		}
+
+		if sf := r.FormValue("subfield"); sf != "" {
+			subfield = &sf
+		}
+
+		if wid := r.FormValue("window_id"); wid != "" {
+			if parsedID, err := strconv.ParseUint(wid, 10, 64); err == nil {
+				windowID = &parsedID
+			}
+		}
+
+		if tid := r.FormValue("team_id"); tid != "" {
+			if parsedID, err := strconv.ParseUint(tid, 10, 64); err == nil {
+				teamID = &parsedID
+			}
+		}
+
+		if s := r.FormValue("submit"); s == "true" || s == "1" {
+			submitVal := true
+			submit = &submitVal
+		}
+
+		// ─── Handle file upload ────────────────────────────────
+		file, handler, err := r.FormFile("document")
+		if err != nil && err != http.ErrMissingFile {
+			c.Json(w, http.StatusBadRequest, "Failed to read uploaded file", map[string]interface{}{"error": err.Error()})
+			return
+		}
+
+		if err == nil && handler != nil {
+			defer file.Close()
+
+			// Validate file extension
+			allowedExts := map[string]bool{".pdf": true, ".docx": true}
+			ext := strings.ToLower(filepath.Ext(handler.Filename))
+			if !allowedExts[ext] {
+				c.Json(w, http.StatusBadRequest, "Invalid file type. Only PDF and DOCX files are allowed.", nil)
+				return
+			}
+
+			// Validate MIME type
+			buff := make([]byte, 512)
+			if _, err := file.Read(buff); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to read uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+			file.Seek(0, io.SeekStart)
+
+			mimeType := http.DetectContentType(buff)
+			allowedMIMEs := map[string]bool{
+				"application/pdf":    true,
+				"application/msword": true,
+				"application/vnd.openxmlformats-officedocument.wordprocessingml.document": true,
+			}
+
+			if !allowedMIMEs[mimeType] {
+				c.Json(w, http.StatusBadRequest, fmt.Sprintf("Invalid file content type: %s. Only PDF and DOCX allowed.", mimeType), nil)
+				return
+			}
+
+			// Create upload directory
+			uploadDir := filepath.Join("uploads", "proposals")
+			if err := os.MkdirAll(uploadDir, 0755); err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to create upload directory", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Generate unique filename
+			filename := fmt.Sprintf("proposal_%d_%d%s", user.UserID, time.Now().Unix(), ext)
+			filePath := filepath.Join(uploadDir, filename)
+			filePath = filepath.Clean(filePath)
+
+			// Save file
+			dest, err := os.Create(filePath)
+			if err != nil {
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+			defer dest.Close()
+
+			if _, err := io.Copy(dest, file); err != nil {
+				os.Remove(filePath) // Clean up on failure
+				c.Json(w, http.StatusInternalServerError, "Failed to save uploaded file", map[string]interface{}{"error": err.Error()})
+				return
+			}
+
+			// Use forward slashes for URL (works on all platforms)
+			url := filepath.ToSlash(filePath)
+			documentURL = &url
+		}
+
+	default:
+		c.Json(w, http.StatusUnsupportedMediaType, "Unsupported Content-Type. Use application/json or multipart/form-data.", nil)
 		return
 	}
 
 	// ─── Update Fields ─────────────────────────────────────────────────────────
-	if payload.Title != nil {
-		proposal.Title = *payload.Title
+	if title != nil {
+		proposal.Title = *title
 	}
-	if payload.Abstract != nil {
-		proposal.Abstract = *payload.Abstract
+	if abstract != nil {
+		proposal.Abstract = *abstract
 	}
-	if payload.Document != nil {
-		proposal.DocumentURL = payload.Document
+	if category != nil {
+		proposal.Category = *category
 	}
-	if payload.Category != nil {
-		proposal.Category = *payload.Category
+	if subfield != nil {
+		proposal.Subfield = subfield
 	}
-	if payload.Subfield != nil {
-		proposal.Subfield = payload.Subfield
+	if windowID != nil {
+		proposal.WindowID = *windowID
 	}
-	if payload.WindowID != nil {
-		proposal.WindowID = *payload.WindowID
+	if teamID != nil {
+		proposal.ProposalTeamID = teamID
 	}
-	if payload.TeamID != nil {
-		proposal.ProposalTeamID = payload.TeamID
+	if documentURL != nil {
+		proposal.DocumentURL = documentURL
 	}
 
 	// ─── Handle Submission ─────────────────────────────────────────────────────
-	if payload.Submit != nil && *payload.Submit {
+	if submit != nil && *submit {
 		proposal.Status = models.ProposalStatusSubmitted
 		t := time.Now()
 		proposal.SubmissionDate = &t
 	}
 
 	if err := c.DB.Save(&proposal).Error; err != nil {
-		http.Error(w, "failed to update proposal", http.StatusInternalServerError)
+		c.Json(w, http.StatusInternalServerError, "Failed to update proposal", map[string]interface{}{"error": err.Error()})
 		return
 	}
 
 	// ─── After proposal is saved ───────────────────────────────────────
-	if payload.Submit != nil && *payload.Submit {
+	if submit != nil && *submit {
 		// Check if a progress entity already exists for this proposal
 		var progressEntity models.ProgressEntity
 		err := c.DB.Where("entity_type = ? AND entity_name = ?", "Proposal", proposal.ProposalID).
@@ -455,7 +564,7 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ─── Notify OpsAdmins if Submitted ───────────────────────────────
-	if payload.Submit != nil && *payload.Submit {
+	if submit != nil && *submit {
 		var opsAdmins []models.User
 		if err := c.DB.Joins("Role").Where("roles.name = ?", "OpsAdmin").Find(&opsAdmins).Error; err == nil {
 			for _, ops := range opsAdmins {
@@ -488,14 +597,10 @@ func (c *Construct) UpdateProposal(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// ─── Response ─────────────────────────────────────────────────────────────
-	resp := map[string]interface{}{
-		"message":     "Proposal updated successfully",
+	c.Json(w, http.StatusOK, "Proposal updated successfully", map[string]interface{}{
 		"proposal_id": proposal.ProposalID,
 		"status":      proposal.Status,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // =========++++======== GET PRoposals ==============+=+++==================+=======
